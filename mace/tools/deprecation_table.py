@@ -463,6 +463,15 @@ DISPOSITIONS: Tuple[Tuple[str, str, str, str], ...] = (
         "config",
     ),
     (
+        "train.cueq_conv_fusion",
+        MERGE,
+        "--cueq_conv_fusion",
+        "the fusion policy becomes part of backend dispatch config, chosen per op "
+        "rather than set by a flag. Note it is the one acceleration setting whose "
+        "0.3.x default differs between training (unfused) and inference (fused), so "
+        "a run that sets it explicitly is not asking for the default either way",
+    ),
+    (
         "train.magmom_key",
         MERGE,
         "--magmom_key",
