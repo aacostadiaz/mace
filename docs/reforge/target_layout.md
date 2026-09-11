@@ -10,7 +10,7 @@ mace_jax ─┐
           (mace_core does not import torch, jax, e3nn, or matscipy-with-torch)
 ```
 
-`mace_core` is the shared contract and pure math (numpy). `mace_torch` and `mace_jax` are *implementations* of the same contract. Neither imports the other. Legacy `mace/` is unreachable from all three. The glue lives in `mace-launcher` (entry points) and `tests/parity/` (oracle), both on the double-import allowlist.
+`mace_core` is the shared contract and pure math (numpy). `mace_torch` and `mace_jax` are *implementations* of the same contract. Neither imports the other. Legacy `mace/` is unreachable from all three. During coexistence the glue lives in `mace-launcher` (entry points) and `tests/parity/` (oracle), both on the double-import allowlist; the launcher is scaffolding and is deleted at RET-6, never published.
 
 ---
 
@@ -214,7 +214,7 @@ packages/mace-torch/
 
 ```
 packages/mace-jax/
-├── pyproject.toml                      # import name `mace_jax`; deps: jax, mace_core; NO e3nn-jax (removed entirely); cuequivariance_jax is an OPTIONAL backend, never a base dep; NEVER imports mace_torch
+├── pyproject.toml                      # import name `mace_jax`; deps: jax, mace_core; NO e3nn-jax (removed entirely); cuequivariance_jax is an OPTIONAL backend, never a base dep; NEVER imports mace_torch. Declares ONE console script of its own, `mace-jax` (JAX-2) -> mace_jax.cli.eval:main
 ├── src/mace_jax/
 │   ├── __init__.py
 │   ├── graph.py                        # flat-dict graph contract bound to jax.Array (same schema as mace_core.graph, rfc-03)
@@ -238,6 +238,16 @@ packages/mace-jax/
     ├── test_parity_neutral.py          # v1-jax loaded from the neutral format == fp64 goldens
     └── test_equivariance.py            # jax equivariance
 ```
+
+**`mace-jax` carries its own console script, and that is not a violation of single ownership.** The
+`mace_*` scripts (and the hierarchical `mace` command CLI-1 builds) are owned by exactly one
+distribution: `mace-launcher` during coexistence, `mace-torch` after RET-6 deletes it. `mace-jax`
+cannot inherit any of them, because it does not depend on `mace-torch` and must remain installable
+without torch, so a jax-only install would otherwise have no CLI at all. The resolution is a
+**separate name, not a shared one**: `mace-jax` declares the script `mace-jax`, spelled with a hyphen
+so it can never collide with the `mace_*` set, and is its sole owner. The CI assertion generalizes
+from "one distribution owns each `mace_*` script" to "one distribution owns each console script", and
+both halves stay true.
 
 ### 1.4 `packages/mace-launcher/` — the glue (double-import allowlist)
 
@@ -267,13 +277,16 @@ modules on the double-import allowlist (the other is `tests/parity/`). It is del
   under `packages/` dynamically imports `mace.*` in v1 mode — the runtime backstop behind
   import-linter's static check (INF-3).
 
-**It is temporary.** The launcher exists *only* for the coexistence window: its whole job is to pick
-between two engines. As each capability reaches parity its `--engine` default flips to `v1` (opt-out);
-at **RET-6**, once the legacy `mace/` is deleted (`git ls-files mace/ == 0`), there is no second engine
-to choose — the legacy dispatch branch is removed and the launcher collapses to a **trivial shim**
-(entry points → `mace_torch.cli.*` directly), at which point it can be folded into `mace-torch`
-entirely. In the Milestone C end-state it carries no logic. The `--engine` flag and this whole package
-are migration scaffolding, not part of the v1 architecture.
+**It is temporary, and it is never published.** The launcher exists *only* for the coexistence
+window: its whole job is to pick between two engines. As each capability reaches parity its `--engine`
+default flips to `v1` (opt-out); at **RET-6**, once the legacy `mace/` is deleted
+(`git ls-files mace/ == 0`), there is no second engine to choose, and what would be left is a
+distribution whose entire content is a `[project.scripts]` table. So RET-6 deletes the package and
+moves that table into `packages/mace-torch/pyproject.toml`, pointed at `mace_torch.cli.*`. Single
+script ownership survives the move: exactly one installed distribution still provides each `mace_*`
+command, and from then on it is `mace-torch`. `mace-launcher` never reaches PyPI, so REL-2 publishes
+three distributions, not four. The `--engine` flag and this whole package are migration scaffolding,
+not part of the v1 architecture.
 
 ### 1.5 `tests/` (repo root) — cross-package parity and the fitness suite
 
@@ -669,7 +682,7 @@ tests/
 ```
 packages/
   mace-core/   mace-torch/   mace-jax/      ← only live paths; deploy/ with torch.export (or isolated export_adapter)
-  mace-launcher/                            ← flat shim: entry points → mace_torch.cli.* directly (legacy branch deleted)
+  (mace-launcher/ deleted at RET-6 — its entry points now live in mace-torch, pointed at mace_torch.cli.*)
 tests/
   unit/ backends/ workflows/ extensions/ foundations/ integrations/ parity/ architecture/
     parity/ degraded to frozen goldens (legacy counterparts no longer exist)
