@@ -36,6 +36,11 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[project.entry-points."mace.data_backends"]
+# One backend is one module and one line here. A third-party wheel declares
+# into the same group and is discovered with no edit in this repository.
+xyz = "mace_core.data.backends.xyz:XYZBackend"
+
 [project.urls]
 Homepage = "https://github.com/ACEsuit/mace"
 
