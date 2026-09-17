@@ -1,0 +1,261 @@
+# The whole v0.3 output surface, declared.
+#
+# This file is a DEMONSTRATION, not a shipped default. It exists to answer one
+# question the team asked: how much does the rewrite grow the repository? The
+# answer is that every observable eleven legacy model classes emit is a row
+# here. Adding the dipole family, the dielectric family, the electrostatic
+# family and the magnetic family costs rows, not modules.
+#
+# The 43 keys those forwards return break down as 28 observables, 5 derivatives
+# of them, and 10 names that are not observables at all. All 43 are accounted
+# for in tests/architecture/observable_coverage.py, which reads them out of the
+# frozen tree rather than trusting this file.
+#
+# Six rows have a shape the quantity does not fix on its own, because a model
+# hyperparameter sets how wide they are. They are written here for one concrete
+# model, marked `# model-dependent`, and the real value comes from the config
+# that builds the model. The choices below are: two interaction layers, a
+# multipole basis to l=2, an anisotropic atomic polarizability, and Born
+# effective charges with both channels.
+#
+# Units follow the legacy tree, as the golden harness records them. Where it
+# writes `Ang` this file writes `Å`.
+
+inputs:
+  - name: pos
+    irreps: "1o"
+    per_atom: true
+    units: "Å"
+
+  - name: cell
+    irreps: "0e+2e"
+    per_atom: false
+    units: "1"
+
+  # The third input, and the one that pays for the derivative grammar being
+  # written over declared inputs rather than over positions and the cell.
+  - name: magmom
+    irreps: "1e"
+    per_atom: true
+    units: "muB"
+
+observables:
+
+  # --- energy ------------------------------------------------------------
+  - name: energy
+    irreps: "0e"
+    per_atom: false
+    units: "eV"
+    normalization: "std"
+    default_loss_weight: 1.0
+    derivatives:
+      - wrt: pos                      # -> forces, sign -1
+        units: "eV/Å"
+        normalization: "rms"
+        default_loss_weight: 100.0
+      - wrt: cell                     # -> stress, sign +1
+        units: "eV/Å^3"
+        default_loss_weight: 1.0
+      - wrt: magmom                   # -> magforces, sign -1
+        units: "eV/muB"
+        default_loss_weight: 1.0
+
+  - name: node_energies
+    irreps: "0e"
+    per_atom: true
+    units: "eV"
+    normalization: "none"
+    default_loss_weight: 0.0
+
+  - name: interaction_energy
+    irreps: "0e"
+    per_atom: false
+    units: "eV"
+    normalization: "none"
+    default_loss_weight: 0.0
+
+  - name: contributions
+    irreps: "4x0e"                    # model-dependent: 2 + num_interactions
+    per_atom: false
+    units: "eV"
+    normalization: "none"
+    default_loss_weight: 0.0
+
+  - name: virials
+    irreps: "0e+2e"
+    per_atom: false
+    units: "eV"
+    normalization: "none"
+    default_loss_weight: 1.0
+
+  - name: atomic_virials
+    irreps: "0e+2e"
+    per_atom: true
+    units: "eV"
+    normalization: "none"
+    default_loss_weight: 0.0
+
+  - name: atomic_stresses
+    irreps: "0e+2e"
+    per_atom: true
+    units: "eV/Å^3"
+    normalization: "none"
+    default_loss_weight: 0.0
+
+  # --- dipoles and dielectric response ------------------------------------
+  - name: dipole
+    irreps: "1o"
+    per_atom: false
+    units: "Debye"
+    normalization: "rms"
+    default_loss_weight: 1.0
+    derivatives:
+      - wrt: pos                      # -> d_dipole_d_pos, the legacy `dmu_dr`
+        units: "Debye/Å"
+        default_loss_weight: 1.0
+
+  - name: atomic_dipoles
+    irreps: "1o"
+    per_atom: true
+    units: "Debye"
+    normalization: "rms"
+    default_loss_weight: 0.0
+
+  - name: polarizability
+    irreps: "0e+2e"
+    per_atom: false
+    units: "Debye*Å/V"
+    normalization: "rms"
+    default_loss_weight: 1.0
+    derivatives:
+      - wrt: pos                      # -> d_polarizability_d_pos, `dalpha_dr`
+        units: "Debye/V"
+        default_loss_weight: 1.0
+
+  - name: polarizability_sh
+    irreps: "0e+2e"
+    per_atom: false
+    units: "Debye*Å/V"
+    normalization: "rms"
+    default_loss_weight: 0.0
+
+  - name: charges
+    irreps: "0e"
+    per_atom: true
+    units: "e"
+    normalization: "none"
+    default_loss_weight: 0.0
+
+  # --- long-range electrostatics (the LES family) --------------------------
+  - name: les_energy
+    irreps: "0e"
+    per_atom: false
+    units: "eV"
+    normalization: "none"
+    default_loss_weight: 0.0
+
+  - name: latent_charges
+    irreps: "0e"
+    per_atom: true
+    units: "e"
+    normalization: "none"
+    default_loss_weight: 0.0
+
+  - name: latent_dipoles
+    irreps: "1o"
+    per_atom: true
+    units: "e*Å"
+    normalization: "none"
+    default_loss_weight: 0.0
+
+  - name: latent_quads
+    irreps: "2e"
+    per_atom: true
+    units: "e*Å^2"
+    normalization: "none"
+    default_loss_weight: 0.0
+
+  - name: latent_kappas
+    irreps: "0e"
+    per_atom: true
+    units: "arb"
+    normalization: "none"
+    default_loss_weight: 0.0
+
+  - name: latent_alphas
+    irreps: "0e+2e"                   # model-dependent: 0e when isotropic
+    per_atom: true
+    units: "arb"
+    normalization: "none"
+    default_loss_weight: 0.0
+
+  - name: born_effective_charges
+    irreps: "2x0e+2x1e+2x2e"          # model-dependent: one channel, or two
+    per_atom: true
+    units: "e"
+    normalization: "none"
+    default_loss_weight: 1.0
+
+  # --- the self-consistent electrostatic model (PolarMACE) ----------------
+  - name: electrostatic_energy
+    irreps: "0e"
+    per_atom: false
+    units: "eV"
+    normalization: "none"
+    default_loss_weight: 0.0
+
+  - name: electron_energy
+    irreps: "0e"
+    per_atom: false
+    units: "eV"
+    normalization: "none"
+    default_loss_weight: 0.0
+
+  - name: fermi_level
+    irreps: "0e"
+    per_atom: false
+    units: "eV"
+    normalization: "none"
+    default_loss_weight: 0.0
+
+  - name: electrostatic_potentials
+    irreps: "0e"
+    per_atom: true
+    units: "V"
+    normalization: "none"
+    default_loss_weight: 0.0
+
+  - name: spins
+    irreps: "0e"
+    per_atom: true
+    units: "e"
+    normalization: "none"
+    default_loss_weight: 0.0
+
+  - name: density_coefficients
+    irreps: "2x0e+2x1o+2x2e"          # model-dependent: atomic_multipoles_max_l
+    per_atom: true
+    units: "arb"
+    normalization: "none"
+    default_loss_weight: 0.0
+
+  - name: spin_density
+    irreps: "2x0e+2x1o+2x2e"          # model-dependent: idem
+    per_atom: true
+    units: "arb"
+    normalization: "none"
+    default_loss_weight: 0.0
+
+  - name: spin_charge_density
+    irreps: "4x0e+4x1o+4x2e"          # model-dependent: idem, times 2 spins
+    per_atom: true
+    units: "arb"
+    normalization: "none"
+    default_loss_weight: 0.0
+
+  - name: fukui_functions
+    irreps: "2x0e"
+    per_atom: true
+    units: "1"
+    normalization: "none"
+    default_loss_weight: 0.0
