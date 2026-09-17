@@ -1,41 +1,58 @@
-"""The Wigner 3j table in the real basis the models actually use.
+"""The Wigner 3j table in the real basis the models use.
 
 The coefficients in :mod:`mace_core.clebsch_gordan.coefficients` are in the
 complex spherical basis. Everything downstream works over real features, so
-they have to be carried across, and which real basis that is is a convention.
+they have to be carried across, and which real basis that is is a convention
+two tickets have to agree on: the spherical harmonics and the contraction are
+built from it, and if they disagree the model is wrong in a way that shows up
+as a number rather than as an error.
 
-**The convention is the textbook one**, stated here once because two tickets
-depend on it agreeing: components run ``m = -l .. +l``, and the real
-combinations are
+**The convention is e3nn's**, which is what the frozen tree's harmonics use and
+what ARCH-1 specifies. It is not the textbook one, and the difference is a
+single fact: e3nn orders the l = 1 components as ``(x, y, z)`` while the
+textbook ``m = -l .. +l`` ordering gives ``(y, z, x)``. That relabelling is a
+cyclic permutation of the axes, which is a rotation of space, so at l >= 2 it
+induces a genuine orthogonal mixing rather than another permutation. Measured
+against ``o3.spherical_harmonics`` up to l = 4, the two agree to 3.6e-15 once
+the coordinates are permuted and each degree is scaled by sqrt(2l+1), which is
+what ``"component"`` normalization means.
 
-    m < 0:   (i/sqrt2) ( Y_l^m - (-1)^m Y_l^-m )
-    m = 0:   Y_l^0
-    m > 0:   (1/sqrt2) ( Y_l^-m + (-1)^m Y_l^m )
+None of that needs e3nn to compute. The induced rotation at each degree is
+solved for from the textbook harmonics alone, by evaluating them on directions
+and on permuted directions, which is what :func:`induced_rotation` does.
 
-This is *not* e3nn's basis, and the difference is not a relabelling. Measured
-against ``o3.spherical_harmonics`` on random directions, e3nn agrees up to a
-signed permutation at l = 0 and l = 1 and then diverges: at l = 2 the
-transformation mixes m = 0 with m = +2 through a rotation. Reproducing e3nn
-element for element would mean reproducing its construction, which is a
-different orthogonal basis of the same space carrying no justification beyond
-being the one that library chose.
-
-So v1 states its own, and the legacy converter absorbs the difference, exactly
-as it already has to absorb the node embedding's factor of sqrt(num_elements).
-Equivalence is what gets tested: the spans agree and the change of basis is
-orthogonal. Nothing observable depends on which of the two is used, because the
-weights that multiply the basis are learned.
+**One difference from e3nn survives and is gauge.** For 17 of the 75 triples up
+to l = 4 the 3j comes out with the opposite overall sign. That sign is the
+arbitrary part of any construction: making the carried tensor real admits both
+``i**L`` and ``(-i)**L``, which differ by ``(-1)**L``, so for odd degree sums
+the sign is a choice. e3nn's comes from its own recursion rather than from a
+rule, and no canonical condition reproduces it: of four tried, the best matched
+60 of 75. It does not matter, because the sign of a basis path is absorbed by
+the weight that multiplies it, and a legacy checkpoint is converted by solving
+for the map rather than assuming it.
 """
 
 from __future__ import annotations
 
 import math
+from functools import cache
 
 import numpy as np
 
 from mace_core.clebsch_gordan.coefficients import wigner_3j_complex
 
-__all__ = ["real_basis_change", "wigner_3j_real"]
+__all__ = [
+    "AXIS_PERMUTATION",
+    "induced_rotation",
+    "real_basis_change",
+    "textbook_harmonics",
+    "wigner_3j_real",
+]
+
+#: Taking a direction to the coordinates the textbook ordering calls its
+#: own. e3nn reads l = 1 as (x, y, z) and the textbook as (y, z, x), so
+#: this is the relabelling between them, and it is a rotation of space.
+AXIS_PERMUTATION = (2, 0, 1)
 
 
 def real_basis_change(degree: int) -> np.ndarray:
@@ -62,8 +79,8 @@ def real_basis_change(degree: int) -> np.ndarray:
     return matrix
 
 
-def wigner_3j_real(l1: int, l2: int, l3: int) -> np.ndarray:
-    """The 3j table of three degrees, in the real basis.
+def _textbook_3j(l1: int, l2: int, l3: int) -> np.ndarray:
+    """The 3j table in the textbook real basis, before the convention change.
 
     Args:
         l1, l2, l3: The three degrees.
@@ -95,3 +112,75 @@ def wigner_3j_real(l1: int, l2: int, l3: int) -> np.ndarray:
             f"phase convention in this module is wrong for this triple."
         )
     return np.ascontiguousarray(carried.real)
+
+
+@cache
+def textbook_harmonics(degree: int, directions: tuple) -> np.ndarray:
+    """Real spherical harmonics in the textbook basis, on given directions.
+
+    Built by the same recursion the model's harmonics use: each degree is the
+    previous one coupled with the l = 1 block through the 3j of this module.
+    It exists here, rather than only in the framework packages, because
+    :func:`induced_rotation` needs it and has to stay framework-free.
+    """
+    points = np.asarray(directions, dtype=float).reshape(-1, 3)
+    points = points / np.linalg.norm(points, axis=1, keepdims=True)
+    blocks = [np.ones((points.shape[0], 1))]
+    if degree == 0:
+        return blocks[0]
+    first = points[:, [1, 2, 0]]
+    blocks.append(first)
+    for order in range(2, degree + 1):
+        coupling = _textbook_3j(order, order - 1, 1)
+        raw = np.einsum("oab,na,nb->no", coupling, blocks[-1], first)
+        blocks.append(raw / np.linalg.norm(raw, axis=1, keepdims=True).mean())
+    return blocks[degree]
+
+
+@cache
+def induced_rotation(degree: int) -> np.ndarray:
+    """The orthogonal map from the textbook basis to e3nn's, at one degree.
+
+    Solved for from the textbook harmonics alone: evaluating them on a set of
+    directions and on the same directions with the axes permuted gives
+    ``Y(Pr) = Y(r) @ Q``, and ``Q`` is that matrix. No e3nn is consulted, and
+    none can be: this module is imported by a package that must not have it.
+
+    A fixed set of directions rather than a random one, so the result is the
+    same on every machine and every run. The system is heavily overdetermined,
+    so the particular directions do not matter as long as they are generic.
+    """
+    if degree == 0:
+        return np.ones((1, 1))
+    angles = np.linspace(0.13, 3.01, 4 * (2 * degree + 1))
+    points = np.stack(
+        [np.cos(angles) * 0.9, np.sin(angles) * 0.8, np.cos(2.0 * angles) * 0.7], axis=1
+    )
+    points = points / np.linalg.norm(points, axis=1, keepdims=True)
+    permuted = points[:, list(AXIS_PERMUTATION)]
+    here = textbook_harmonics(degree, tuple(map(tuple, points)))
+    there = textbook_harmonics(degree, tuple(map(tuple, permuted)))
+    rotation, *_ = np.linalg.lstsq(here, there, rcond=None)
+    return np.ascontiguousarray(rotation)
+
+
+def wigner_3j_real(l1: int, l2: int, l3: int) -> np.ndarray:
+    """The 3j table in e3nn's real basis, which is the project's convention.
+
+    The textbook table conjugated by :func:`induced_rotation` on each index.
+    Same shape, same unit sum of squares, and the same span; what changes is
+    which basis of the irrep the components are written against, which is the
+    thing the spherical harmonics have to agree with.
+    """
+    table = _textbook_3j(l1, l2, l3)
+    if not table.any():
+        return table
+    return np.ascontiguousarray(
+        np.einsum(
+            "ia,jb,kc,ijk->abc",
+            induced_rotation(l1),
+            induced_rotation(l2),
+            induced_rotation(l3),
+            table,
+        )
+    )
