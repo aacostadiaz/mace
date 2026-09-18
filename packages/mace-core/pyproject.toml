@@ -18,7 +18,9 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 # numpy is the array type every value in this package is expressed over, and
-# pydantic validates the declarations a user writes by hand.
+# pydantic validates the declarations a user writes by hand. tomli reads the
+# configuration files on the Python versions whose standard library has no
+# tomllib.
 #
 # ase is here deliberately, and it is the one dependency that looks like it
 # does not belong in a framework-agnostic package. The extended-XYZ contract
@@ -32,8 +34,11 @@ classifiers = [
 dependencies = [
     "numpy>=1.23",
     "ase>=3.23",
+    # The suite passes at this floor (2.7.4 on Python 3.10) and at current
+    # releases.
     "pydantic>=2.7",
     "pyyaml>=6.0",
+    "tomli>=2.0",
 ]
 
 [project.entry-points."mace.data_backends"]
