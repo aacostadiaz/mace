@@ -180,7 +180,15 @@ class MACEBackbone(nn.Module):
         sender, receiver = edge_index[0], edge_index[1]
         num_nodes = int(positions.shape[0])
 
-        vectors = positions[receiver] - positions[sender] + graph["shifts"]
+        # The derivative engine forms these in its own phase, because a strain
+        # has to reach the positions before the vectors are built and because
+        # edge forces need the vectors themselves as the graph leaf. When they
+        # are already there they are used as given; otherwise they are built
+        # here, which is what a plain forward with no derivatives does.
+        if "vectors" in graph:
+            vectors = graph["vectors"]
+        else:
+            vectors = positions[receiver] - positions[sender] + graph["shifts"]
         lengths = vectors.norm(dim=-1, keepdim=True)
         edge_attributes = self.edge_attributes(vectors)
         radial = self.radial(lengths)
