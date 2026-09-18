@@ -47,6 +47,7 @@ __all__ = [
     "real_basis_change",
     "textbook_harmonics",
     "wigner_3j_real",
+    "wigner_d_real",
 ]
 
 #: Taking a direction to the coordinates the textbook ordering calls its
@@ -184,3 +185,53 @@ def wigner_3j_real(l1: int, l2: int, l3: int) -> np.ndarray:
             table,
         )
     )
+
+
+def wigner_d_real(degree: int, rotation: np.ndarray) -> np.ndarray:
+    """How one irrep's components move when space is rotated.
+
+    The representation matrix ``D`` of the rotation at this degree, in the
+    project's own basis, so that a feature row ``f`` carrying this irrep goes
+    to ``f @ D`` when the positions go to ``r @ rotation.T``.
+
+    Solved from the project's own harmonics rather than from a closed form in
+    Euler angles: the basis is the one this module defines, so deriving ``D``
+    from anything else would be asserting a convention instead of reading it.
+    The system is overdetermined by a factor of four, which is what makes the
+    least squares an identification rather than a fit.
+
+    Args:
+        degree: The irrep's degree.
+        rotation: A ``(3, 3)`` proper rotation.
+
+    Returns:
+        A ``(2 * degree + 1, 2 * degree + 1)`` orthogonal matrix.
+    """
+    rotation = np.asarray(rotation, dtype=float)
+    if rotation.shape != (3, 3):
+        raise ValueError(
+            f"a rotation is a (3, 3) matrix, and this one has shape {rotation.shape}."
+        )
+    if degree == 0:
+        return np.ones((1, 1))
+
+    angles = np.linspace(0.13, 3.01, 4 * (2 * degree + 1))
+    points = np.stack(
+        [np.cos(angles) * 0.9, np.sin(angles) * 0.8, np.cos(2.0 * angles) * 0.7], axis=1
+    )
+    points = points / np.linalg.norm(points, axis=1, keepdims=True)
+    turned = points @ rotation.T
+
+    change = induced_rotation(degree)
+    here = textbook_harmonics(degree, tuple(map(tuple, points))) @ change
+    there = textbook_harmonics(degree, tuple(map(tuple, turned))) @ change
+    wigner, *_ = np.linalg.lstsq(here, there, rcond=None)
+
+    residue = np.abs(wigner @ wigner.T - np.eye(2 * degree + 1)).max()
+    if residue > 1e-9:
+        raise AssertionError(
+            f"the Wigner matrix for degree {degree} came out non-orthogonal by "
+            f"{residue:.3e}, which means the argument was not a proper "
+            f"rotation. Its determinant is {np.linalg.det(rotation):.6f}."
+        )
+    return np.ascontiguousarray(wigner)
