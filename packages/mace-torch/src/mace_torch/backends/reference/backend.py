@@ -36,17 +36,17 @@ from mace_core.kernels.protocol import DISPATCHED_OPS, REFERENCE_ONLY_OPS
 from torch import Tensor, nn
 
 from mace_torch.backends.reference.spherical_harmonics import spherical_harmonics
-from mace_torch.nn.radial import (
-    BesselBasis,
-    ChebyshevBasis,
-    GaussianBasis,
-    PolynomialCutoff,
-)
 from mace_torch.kernels.ops import (
     channelwise_tp_conv,
     equivariant_linear,
     segment_sum,
     symmetric_contraction,
+)
+from mace_torch.nn.radial import (
+    BesselBasis,
+    ChebyshevBasis,
+    GaussianBasis,
+    PolynomialCutoff,
 )
 
 __all__ = ["ReferenceBackend"]
@@ -362,9 +362,16 @@ class ReferenceRadialBasis(nn.Module):
                 f"{descriptor.kind!r} is not a radial basis this backend "
                 f"builds. The kinds are {sorted(_BASES)}."
             )
-        self.basis = _BASES[descriptor.kind](
-            r_max=descriptor.cutoff, num_basis=descriptor.num_basis
-        )
+        # ARCH-1's Chebyshev takes no r_max, and rightly: the frozen tree
+        # stored one and never used it, so the polynomials run past the unit
+        # interval into the divergent branch. Passing it would be inventing a
+        # parameter the basis does not have.
+        if descriptor.kind == "chebyshev":
+            self.basis = _BASES[descriptor.kind](num_basis=descriptor.num_basis)
+        else:
+            self.basis = _BASES[descriptor.kind](
+                r_max=descriptor.cutoff, num_basis=descriptor.num_basis
+            )
         self.cutoff = PolynomialCutoff(r_max=descriptor.cutoff)
 
     def forward(self, lengths: Tensor) -> Tensor:
