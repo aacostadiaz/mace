@@ -22,7 +22,9 @@ whatever computes the stress.
 from __future__ import annotations
 
 __all__ = [
+    "DERIVATION_MODES",
     "SPECIAL_CASES",
+    "derivation_mode",
     "derivative_name",
     "derivative_sign",
 ]
@@ -63,3 +65,28 @@ def derivative_sign(quantity: str, wrt: str) -> int:
     if special is not None:
         return special[1]
     return 1
+
+
+#: How a derivative is taken, per input. The mode is **derived from the target**
+#: rather than declared beside it: a declaration carrying both could say
+#: ``wrt: pos`` and ``derivation: grad_input``, and nothing would catch it. What
+#: the target is already determines how the derivative can be taken.
+#:
+#: * ``autograd`` for the positions, the ordinary force path.
+#: * ``grad_strain`` for the cell, which is differentiated through an injected
+#:   strain rather than against the cell entries themselves.
+#: * ``grad_input`` for every other declared input, which becomes a graph leaf
+#:   of its own.
+DERIVATION_MODES: dict[str, str] = {"pos": "autograd", "cell": "grad_strain"}
+
+
+def derivation_mode(wrt: str) -> str:
+    """How ``d(anything)/d(wrt)`` is taken.
+
+    Args:
+        wrt: The name of the declared input.
+
+    Returns:
+        ``autograd``, ``grad_strain`` or ``grad_input``.
+    """
+    return DERIVATION_MODES.get(wrt, "grad_input")

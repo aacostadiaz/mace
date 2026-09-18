@@ -34,9 +34,11 @@ from mace_core.kernels.descriptors import (
     RadialBasisDescriptor,
     SphericalHarmonicsDescriptor,
 )
+from mace_core.observables import InputSpec
 from torch import Tensor, nn
 
 from mace_torch.nn.interaction import InteractionBlock
+from mace_torch.nn.node_inputs import NodeInputEmbedding
 from mace_torch.nn.product_basis import EquivariantProductBasisBlock
 
 __all__ = ["MACEBackbone"]
@@ -59,6 +61,10 @@ class MACEBackbone(nn.Module):
         avg_num_neighbors: The density normalization.
         radial_kind: Which radial basis.
         precision: The dtype name every op is built at.
+        node_inputs: Declared per-node input streams to mix into the features
+            before the first layer. Nothing about them is special-cased: each
+            is read by name and brought in by an equivariant map from its own
+            declared irreps.
         locality: An optional hook taking the node features and the graph and
             returning the features to carry into the next layer. This is where
             a domain-decomposed run slices off its ghost nodes. Absent by
@@ -80,6 +86,7 @@ class MACEBackbone(nn.Module):
         radial_kind: str = "bessel",
         precision: str = "float64",
         locality: Callable[[Tensor, Mapping[str, Any]], Tensor] | None = None,
+        node_inputs: Sequence[InputSpec] = (),
     ) -> None:
         super().__init__()
         self.atomic_numbers = list(atomic_numbers)
@@ -110,6 +117,18 @@ class MACEBackbone(nn.Module):
                 irreps_out=hidden_irreps,
                 precision=precision,
             )
+        )
+
+        self.node_inputs = (
+            NodeInputEmbedding(
+                backend,
+                list(node_inputs),
+                hidden_irreps=hidden_irreps,
+                num_features=num_features,
+                precision=precision,
+            )
+            if node_inputs
+            else None
         )
 
         interactions, products, radial_maps = [], [], []
@@ -204,6 +223,8 @@ class MACEBackbone(nn.Module):
 
         features = self.node_embedding(one_hot)
         features = features.unsqueeze(1).expand(-1, self.num_features, -1).contiguous()
+        if self.node_inputs is not None:
+            features = self.node_inputs(graph, features)
 
         outputs = []
         for interaction, product, radial_map in zip(
