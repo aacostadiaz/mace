@@ -10,5 +10,13 @@ from mace_core.config.base import (
     ReforgeBaseConfig,
     read_config_file,
 )
+from mace_core.config.fixed_point import FixedPointSpec, SolverKind
 
-__all__ = ["ConfigError", "ConfigSection", "ReforgeBaseConfig", "read_config_file"]
+__all__ = [
+    "ConfigError",
+    "ConfigSection",
+    "FixedPointSpec",
+    "ReforgeBaseConfig",
+    "SolverKind",
+    "read_config_file",
+]
