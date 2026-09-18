@@ -29,10 +29,13 @@ from typing import Any
 
 import torch
 from mace_core.clebsch_gordan.irreps import Irreps
-from mace_core.kernels.descriptors import LinearDescriptor, RadialBasisDescriptor
+from mace_core.kernels.descriptors import (
+    LinearDescriptor,
+    RadialBasisDescriptor,
+    SphericalHarmonicsDescriptor,
+)
 from torch import Tensor, nn
 
-from mace_torch.backends.reference import spherical_harmonics
 from mace_torch.nn.interaction import InteractionBlock
 from mace_torch.nn.product_basis import EquivariantProductBasisBlock
 
@@ -90,6 +93,9 @@ class MACEBackbone(nn.Module):
             f"{degree}{'e' if degree % 2 == 0 else 'o'}" for degree in range(lmax + 1)
         )
         self.edge_irreps = edge_irreps
+        self.edge_attributes = backend.make_spherical_harmonics(
+            SphericalHarmonicsDescriptor(lmax=lmax, precision=precision)
+        )
         self.radial = backend.make_radial_basis(
             RadialBasisDescriptor(
                 kind=radial_kind,
@@ -176,7 +182,7 @@ class MACEBackbone(nn.Module):
 
         vectors = positions[receiver] - positions[sender] + graph["shifts"]
         lengths = vectors.norm(dim=-1, keepdim=True)
-        edge_attributes = spherical_harmonics(vectors, self.lmax)
+        edge_attributes = self.edge_attributes(vectors)
         radial = self.radial(lengths)
 
         element = self.element_index(graph["atomic_numbers"])
