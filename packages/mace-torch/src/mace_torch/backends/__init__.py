@@ -1,4 +1,8 @@
-"""Kernel backends for torch. The reference one is mandatory and always here."""
+"""Kernel backends of the v1 PyTorch stack.
+
+``reference`` holds the plain-torch implementations every other backend is
+measured against.
+"""
 
 from mace_torch.backends.reference import ReferenceBackend
 

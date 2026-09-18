@@ -29,6 +29,8 @@ classifiers = [
 dependencies = [
     "mace-core",
     "torch>=2.4",
+    # Covalent radii for the ZBL repulsion and the distance transforms.
+    "ase",
 ]
 
 [project.entry-points."mace.kernel_backends.torch"]

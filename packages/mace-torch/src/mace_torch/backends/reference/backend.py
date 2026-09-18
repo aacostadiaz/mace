@@ -35,8 +35,13 @@ from mace_core.kernels.descriptors import (
 from mace_core.kernels.protocol import DISPATCHED_OPS, REFERENCE_ONLY_OPS
 from torch import Tensor, nn
 
-from mace_torch.backends.harmonics import spherical_harmonics
-from mace_torch.backends.radial import radial_basis
+from mace_torch.backends.reference.spherical_harmonics import spherical_harmonics
+from mace_torch.nn.radial import (
+    BesselBasis,
+    ChebyshevBasis,
+    GaussianBasis,
+    PolynomialCutoff,
+)
 from mace_torch.kernels.ops import (
     channelwise_tp_conv,
     equivariant_linear,
@@ -336,20 +341,34 @@ class ReferenceSphericalHarmonics(nn.Module):
         )
 
 
+#: The basis each declared kind builds. ARCH-1 owns these classes; this is only
+#: the lookup from the descriptor's name to one of them, so there is no second
+#: implementation of a basis anywhere.
+_BASES = {
+    "bessel": BesselBasis,
+    "chebyshev": ChebyshevBasis,
+    "gaussian": GaussianBasis,
+}
+
+
 class ReferenceRadialBasis(nn.Module):
     """The radial embedding, with the cutoff envelope already applied."""
 
     def __init__(self, descriptor: RadialBasisDescriptor) -> None:
         super().__init__()
         self.descriptor = descriptor
+        if descriptor.kind not in _BASES:
+            raise ValueError(
+                f"{descriptor.kind!r} is not a radial basis this backend "
+                f"builds. The kinds are {sorted(_BASES)}."
+            )
+        self.basis = _BASES[descriptor.kind](
+            r_max=descriptor.cutoff, num_basis=descriptor.num_basis
+        )
+        self.cutoff = PolynomialCutoff(r_max=descriptor.cutoff)
 
     def forward(self, lengths: Tensor) -> Tensor:
-        return radial_basis(
-            lengths,
-            self.descriptor.kind,
-            self.descriptor.num_basis,
-            self.descriptor.cutoff,
-        )
+        return self.basis(lengths) * self.cutoff(lengths)
 
 
 class ReferenceBackend:
