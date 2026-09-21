@@ -65,7 +65,7 @@ ResolvedConfig ──▶ DataStage ──▶ DataBundle ──▶ ModelStage ─
   `mace_core` implementation. Pseudolabel generation is a **callable stage** here (RFC-06), not
   `requires_grad` juggling welded into training.
 - **`ModelStage` → `BuiltModel`.** The successor to `configure_model`: `ResolvedConfig` +
-  statistics → a two-layer `BaseMACE` + `MACEOutputs`. **Observables are declared, not
+  statistics → a two-layer `MACEBackbone` + `MACEOutputs`, composed by `MACEModel`. **Observables are declared, not
   hand-set** — the `args.compute_*` ladder (§1) disappears; declaring `energy, forces, dipole`
   in config creates the heads (ARCH-3, CORE-1). Backend dispatch resolves here, once, at build
   time (RFC-01); the in-place cueq/oeq conversion goes away.

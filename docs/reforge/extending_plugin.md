@@ -92,7 +92,7 @@ from an external package.
 ## 4. Versioning and compatibility
 
 - The plugin **pins a MACE range** (`mace-torch>=1.0`) and builds only against the **public registry
-  API** — `register_*`, `ObservableSpec`, `BaseMACE`, the model-transform hook. That surface is the
+  API** — `register_*`, `ObservableSpec`, `MACEModel`, the model-transform hook. That surface is the
   contract; internal modules are not.
 - MACE exposes its version; the loader can **warn and skip** a plugin whose declared target is
   incompatible, rather than importing it into a mismatched API.

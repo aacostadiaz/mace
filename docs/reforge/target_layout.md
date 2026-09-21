@@ -140,7 +140,7 @@ packages/mace-torch/
 │   │   └── lora.py                     # LoRA adapters for fine-tuning
 │   │
 │   ├── models/
-│   │   ├── base.py                     # BaseMACE: the composed model, nn/backbone.py + the output layer. forward→MACEOutputs; built from ModelConfig; declarative observables
+│   │   ├── base.py                     # MACEModel: the composed model, nn/backbone.py + the output layer. forward→MACEOutputs; built from ModelConfig; declarative observables
 │   │   ├── energy.py                   # MACE, ScaleShiftMACE
 │   │   ├── dipole.py                   # AtomicDipolesMACE, EnergyDipolesMACE
 │   │   ├── dielectric.py               # AtomicDielectricMACE
@@ -229,7 +229,7 @@ packages/mace-jax/
 │   │   ├── readout.py
 │   │   └── radial.py
 │   ├── models/
-│   │   ├── base.py                     # BaseMACE jax → MACEOutputs
+│   │   ├── base.py                     # MACEModel jax: MACEBackbone-jax + MACEOutputs-jax
 │   │   └── energy.py                   # MACE / ScaleShiftMACE jax
 │   ├── physics/outputs.py              # forces/stress via jax.grad (first derivatives only — inference-only per D1)
 │   ├── data/dataset.py                 # jax loader
@@ -388,7 +388,7 @@ in the forward is a real code change:
 | **A new loss** — a non-standard reduction, or a data/relative-energy/mask transform | `@register_loss` / `@register_transform` + select it in config | a small module |
 | **A new readout / head** | `@register_readout` + config | a small module |
 | **A new backend** — kernel, data format, neighbour list, electrostatics solver | ship a wheel with one entry-point line (`mace.kernel_backends.torch`, `mace.data_backends`, `mace.neighbor_backends`, `mace.electrostatics_backends.torch`) | a backend module, **zero core edits** |
-| **A new model** — new physics in the forward (electrostatics k-space, an SCF loop, magnetic-with-new-physics) | a `BaseMACE` subclass + `@register_model` (+ a model-transform hook) | a real model — **the one non-free case** |
+| **A new model** — new physics in the forward (electrostatics k-space, an SCF loop, magnetic-with-new-physics) | a `MACEModel` subclass + `@register_model` (+ a model-transform hook) | a real model — **the one non-free case** |
 
 Principle: **extending the system touches ZERO core files** — everything enters via a config field, a
 registry decorator, or an entry point + a test that inherits a parametrized harness. Two clarifications
@@ -495,7 +495,7 @@ silently wrong forces); it stays usable for inference (`supports_double_backward
 ### 3.2 A new observable (config only)
 
 - **Extender touches:** a declarations file: one `ObservableSpec` row giving `name`, `irreps`, `per_atom`, `units`, `normalization`, `default_loss_weight`, and the declared inputs to differentiate against. No module, no decorator. A derivative is named by the rule `d_<q>_d_<x>`, with `forces`, `stress` and `magforces` as the three special cases, so asking for a derivative against a newly declared input needs no code either.
-- **Core touched:** zero files. The model exposes the row automatically because `BaseMACE` iterates over the declared observables; `MACEOutput` carries the six core fields and everything else by name in `extras`.
+- **Core touched:** zero files. The model exposes the row automatically because `MACEModel` iterates over the declared observables; `MACEOutput` carries the six core fields and everything else by name in `extras`.
 - **Enabling it:** list it in the model config's observables, or point the config at a declarations file that extends `defaults/observables.yaml`.
 - **Test:** `packages/mace-core/tests/test_observables.py` validates the grammar and the derivative naming (pure); if it is autograd-derived, `tests/parity` verifies finite-diff.
 
@@ -577,12 +577,12 @@ first-class *read* path for external corpora, not a new write schema.
 ### 3.5 A new head / readout
 
 - **Extender touches:** `mace_torch/nn/readout.py` (or its own module) with `@register_readout("MyReadout")`; for a head, `HeadConfig(readout="MyReadout", ...)` in `mace_torch/finetune/multihead.py`.
-- **Core touched:** zero — `READOUT_REGISTRY` is populated by decorator; `BaseMACE` builds readouts by name from `ModelConfig`. Bias readouts force `mul_ir`; the `linear_irreps(..., bias=)` contract covers this explicitly instead of the legacy's hardcoded `o3.Linear(biases=True)`.
+- **Core touched:** zero — `READOUT_REGISTRY` is populated by decorator; `MACEModel` builds readouts by name from `ModelConfig`. Bias readouts force `mul_ir`; the `linear_irreps(..., bias=)` contract covers this explicitly instead of the legacy's hardcoded `o3.Linear(biases=True)`.
 - **Test:** `tests/unit/test_readout_registry.py` (value) + equivariance (`tests/parity/test_equivariance.py` includes the new head if it is in the registry).
 
 ### 3.6 A new model (e.g. electrostatics)
 
-- **Extender touches:** `mace_torch/models/mymodel.py` subclassing `BaseMACE` (block composition + `observables`), + `@register_model("MyModel")`. Real example: `PolarMACE` lives in `models/electrostatics.py` as just another entry, not as an `extensions.py` bolt-on.
+- **Extender touches:** `mace_torch/models/mymodel.py` subclassing `MACEModel` (block composition + `observables`), + `@register_model("MyModel")`. Real example: `PolarMACE` lives in `models/electrostatics.py` as just another entry, not as an `extensions.py` bolt-on.
 - **Core touched:** zero — `MODEL_REGISTRY` by decorator; `build.py` instantiates via `ModelConfig(model="MyModel")`.
 - **Test:** per-model harness in `tests/parity` (fp64 parity vs legacy if a legacy counterpart exists; if brand-new, finite-diff + equivariance + committed goldens).
 
@@ -592,10 +592,10 @@ still registered, not patched:
 
 ```python
 # mace_torch/models/electrostatics.py
-from mace_torch.models import BaseMACE, register_model
+from mace_torch.models import MACEModel, register_model
 
 @register_model("MyElectrostatic")                  # decorator registers it; build.py finds it by name
-class MyElectrostatic(BaseMACE):
+class MyElectrostatic(MACEModel):
     def forward(self, graph):
         outputs = super().forward(graph)            # backbone then output layer: a MACEOutputs
         # add a k-space / SCF term that depends on positions and cell and couples into the
@@ -618,7 +618,7 @@ that is backend-swappable, and that goes through RFC-09, not here.
 
 **Summary of "core files touched by extension": 0 in all 6 cases.** Everything enters via entry_point or registry decorator; the core only defines Protocols/registries.
 
-**Honest boundary.** This holds for the first five rows. A **new model** is different: `MACELES` and `PolarMACE` subclass `ScaleShiftMACE` and override its forward (`mace/modules/extensions.py:78,307`), and `PolarMACE` adds k-space electrostatic energies that depend on positions and cell and couple into the derivative engine. A model is therefore a `BaseMACE` subclass plus a `MACEOutputs` plus, for electrostatics, a model-transform hook — registered rather than patched, but not free. See RFC-01 §6b.2.
+**Honest boundary.** This holds for the first five rows. A **new model** is different: `MACELES` and `PolarMACE` subclass `ScaleShiftMACE` and override its forward (`mace/modules/extensions.py:78,307`), and `PolarMACE` adds k-space electrostatic energies that depend on positions and cell and couple into the derivative engine. A model is therefore a `MACEModel` subclass plus, for electrostatics, a model-transform hook — registered rather than patched, but not free. See RFC-01 §6b.2.
 
 ---
 

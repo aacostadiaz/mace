@@ -195,10 +195,10 @@ Everything so far is config plus two small registered modules. The models themse
 
 ```python
 # mace_torch/extras/magnetic/model.py
-from mace_torch.models import BaseMACE, register_model
+from mace_torch.models import MACEModel, register_model
 
 @register_model("MagneticScaleShiftMACE")
-class MagneticScaleShiftMACE(BaseMACE):
+class MagneticScaleShiftMACE(MACEModel):
     """Energy model with the magmom input channel; energy readout + magforces = -dE/dmagmom.
     The magmom tensor-product channel is model code, not a readout row — the honest boundary."""
     def forward(self, graph):
@@ -225,7 +225,7 @@ model = "MagneticScaleShiftMACE"       # the trainable model
 # MagneticSCFMACE wraps it for inference-time equilibration; it is not a training transform
 ```
 
-`MagneticScaleShiftMACE` is a real `BaseMACE` subclass — the magmom channel lives in the forward, so it
+`MagneticScaleShiftMACE` is a real `MACEModel` subclass — the magmom channel lives in the forward, so it
 is genuine model code, unlike the config rows above. `MagneticSCFMACE` is a thin **inference wrapper**;
 because it is not differentiated through, it needs no implicit-diff contract. Both are **registered,
 not patched** — no shared-file changes. (If a variant needed an accelerated long-range solver, that
