@@ -31,6 +31,9 @@ dependencies = [
     "torch>=2.4",
     # Covalent radii for the ZBL repulsion and the distance transforms.
     "ase",
+    # The checkpoint format. Tensors only, no pickle, so a checkpoint carries
+    # no executable code and can be read without trusting its author.
+    "safetensors",
 ]
 
 [project.entry-points."mace.kernel_backends.torch"]
