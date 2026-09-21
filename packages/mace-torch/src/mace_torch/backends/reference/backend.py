@@ -258,8 +258,15 @@ def _coupling_coefficients(descriptor: ChannelwiseTPConvDescriptor) -> np.ndarra
         block = np.zeros((width, node.dimension, edge.dimension))
         in_slice, in_ir = node_slices[path.node_term]
         edge_slice, edge_ir = edge_slices[path.edge_term]
+        # Scaled so each path's output has unit variance when its inputs do.
+        # The coupling table has unit norm, so the factor is the square root of
+        # the output's dimension: a coupling spreading over five components
+        # would otherwise contribute a fifth of the variance of one landing on a
+        # single scalar, and the linear after the convolution would see paths
+        # whose sizes differ by more than a factor of two.
         block[offset : offset + path.irrep.dimension, in_slice, edge_slice] = (
             wigner_3j_real(path.irrep.degree, in_ir.degree, edge_ir.degree)
+            * np.sqrt(path.irrep.dimension)
         )
         blocks.append(block)
         offset += path.irrep.dimension
@@ -430,7 +437,9 @@ class ReferenceRadialBasis(nn.Module):
             self.basis = BesselBasis(
                 r_max=descriptor.cutoff, num_basis=descriptor.num_basis
             )
-        self.cutoff = PolynomialCutoff(r_max=descriptor.cutoff)
+        self.cutoff = PolynomialCutoff(
+            r_max=descriptor.cutoff, polynomial_order=descriptor.cutoff_order
+        )
 
     def forward(self, lengths: Tensor) -> Tensor:
         return self.basis(lengths) * self.cutoff(lengths)
