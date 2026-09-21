@@ -61,6 +61,9 @@ class MACEBackbone(nn.Module):
         correlation: The body order of the product basis.
         avg_num_neighbors: The density normalization.
         radial_kind: Which radial basis.
+        cutoff_order: The order of the envelope that takes it to zero at the
+            cutoff. It comes from the model's cutoff setting, not from the
+            basis.
         precision: The dtype name every op is built at.
         node_inputs: Declared per-node input streams to mix into the features
             before the first layer. Nothing about them is special-cased: each
@@ -85,6 +88,7 @@ class MACEBackbone(nn.Module):
         correlation: int = 3,
         avg_num_neighbors: float = 1.0,
         radial_kind: str = "bessel",
+        cutoff_order: int = 6,
         precision: str = "float64",
         locality: Callable[[Tensor, Mapping[str, Any]], Tensor] | None = None,
         node_inputs: Sequence[InputSpec] = (),
@@ -109,6 +113,7 @@ class MACEBackbone(nn.Module):
                 kind=radial_kind,
                 num_basis=num_radial,
                 cutoff=cutoff,
+                cutoff_order=cutoff_order,
                 precision=precision,
             )
         )
