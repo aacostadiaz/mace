@@ -22,6 +22,10 @@ from mace_core.clebsch_gordan.reduced_basis import (
     full_symmetric_tensor_product_basis,
     reduced_symmetric_tensor_product_basis,
 )
+from mace_core.kernels.canonical import (
+    KERNEL_SPEC_VERSION,
+    contraction_path_labels,
+)
 from mace_core.kernels.capabilities import BackendCapabilities
 from mace_core.kernels.descriptors import (
     ChannelwiseTPConvDescriptor,
@@ -205,6 +209,27 @@ class ReferenceSymmetricContraction(nn.Module):
             for position, tables in enumerate(self.bases)
         ]
         return torch.cat(pieces, dim=-1)
+
+    def canonical_metadata(self) -> dict[str, object]:
+        """What each weight on the path axis multiplies, by name.
+
+        The path count alone does not pin the layout: two implementations can
+        agree on how many paths there are and keep a different subset of the
+        linearly dependent coupling trees. Writing the trees is what turns that
+        into a refused load rather than a model that runs on the wrong basis.
+        """
+        return {
+            "spec_version": KERNEL_SPEC_VERSION,
+            "basis": self.descriptor.basis,
+            "paths": list(
+                contraction_path_labels(
+                    self.descriptor.irreps_in,
+                    self.descriptor.irreps_out,
+                    self.descriptor.correlation,
+                    basis=self.descriptor.basis,
+                )
+            ),
+        }
 
     def to_canonical(self) -> dict[str, Tensor]:
         """The flat ``[Z, A, mul]`` array, joined over irreps and body orders.
