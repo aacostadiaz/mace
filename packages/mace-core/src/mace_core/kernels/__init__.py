@@ -24,6 +24,8 @@ from mace_core.kernels.canonical import (
     CANONICAL_LAYOUT,
     KERNEL_SPEC_VERSION,
     canonical_weight_shape,
+    contraction_path_labels,
+    contraction_path_order,
 )
 from mace_core.kernels.capabilities import (
     BackendCapabilities,
@@ -52,6 +54,12 @@ from mace_core.kernels.registry import (
     available_backends,
     get_backend,
 )
+from mace_core.kernels.reorder import (
+    ReorderBlock,
+    ReorderError,
+    WeightReorder,
+    derive_reorder,
+)
 
 __all__ = [
     "CANONICAL_LAYOUT",
@@ -70,11 +78,17 @@ __all__ = [
     "LinearDescriptor",
     "Precision",
     "RadialBasisDescriptor",
+    "ReorderBlock",
+    "ReorderError",
     "SegmentReduceDescriptor",
     "SphericalHarmonicsDescriptor",
     "SymmetricContractionDescriptor",
     "UnsupportedDescriptorError",
+    "WeightReorder",
     "available_backends",
     "canonical_weight_shape",
+    "contraction_path_labels",
+    "contraction_path_order",
+    "derive_reorder",
     "get_backend",
 ]
