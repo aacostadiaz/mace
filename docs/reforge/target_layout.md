@@ -118,7 +118,7 @@ packages/mace-torch/
 │   │   │   └── spherical_harmonics.py             # spherical harmonics + reference radial basis (non-hot)
 │   │   ├── cueq/
 │   │   │   ├── backend.py              # CuEqBackend: wraps cuequivariance behind the Protocol (kills the types.MethodType monkeypatch)
-│   │   │   └── canonical.py            # to_canonical/load_canonical ONLY at the boundary (mul_ir↔ir_mul reshape; the canonical→fused-basis map is a scaled permutation applied once at build time, rfc-01 §2.4.1)
+│   │   │   └── canonical.py            # to_canonical/load_canonical ONLY at the boundary (mul_ir↔ir_mul reshape; the canonical→fused-basis map is block diagonal, derived once at build time by matching coupling-tree labels; it degenerates to a scaled permutation exactly where both enumerations kept the same trees, rfc-01 §2.4.1)
 │   │   ├── oeq/
 │   │   │   ├── backend.py              # OEQBackend: wraps OpenEquivariance behind the Protocol
 │   │   │   └── canonical.py            # oeq layout boundary
@@ -131,6 +131,7 @@ packages/mace-torch/
 │   │   ├── interaction.py              # the 6 RealAgnostic*InteractionBlock (fusion-agnostic forward: calls channelwise_tp_conv)
 │   │   ├── product_basis.py            # EquivariantProductBasisBlock (uses the symmetric_contraction op; no layout torch.transpose)
 │   │   ├── symmetric_contraction.py    # SymmetricContraction as a native op (no fx.symbolic_trace, no CodeGenMixin)
+│   │   ├── backbone.py                 # MACEBackbone: the equivariant layer. Node features in, node features out; no readouts, no gradient calls
 │   │   ├── readout.py                  # LinearReadoutBlock, NonLinearReadoutBlock, NonLinearBiasReadoutBlock, GeneralNonLinearBiasReadoutBlock, LinearDipoleReadoutBlock, NonLinearDipoleReadoutBlock
 │   │   ├── scale_shift.py              # ScaleShiftBlock (E0-after-shift semantics PINNED per-model)
 │   │   ├── gate.py                     # equivariant gates (mirror of modules/gate.py)
@@ -139,7 +140,7 @@ packages/mace-torch/
 │   │   └── lora.py                     # LoRA adapters for fine-tuning
 │   │
 │   ├── models/
-│   │   ├── base.py                     # two-layer BaseMACE: forward→MACEOutputs; built from ModelConfig; declarative observables
+│   │   ├── base.py                     # BaseMACE: the composed model, nn/backbone.py + the output layer. forward→MACEOutputs; built from ModelConfig; declarative observables
 │   │   ├── energy.py                   # MACE, ScaleShiftMACE
 │   │   ├── dipole.py                   # AtomicDipolesMACE, EnergyDipolesMACE
 │   │   ├── dielectric.py               # AtomicDielectricMACE
@@ -586,7 +587,7 @@ first-class *read* path for external corpora, not a new write schema.
 - **Test:** per-model harness in `tests/parity` (fp64 parity vs legacy if a legacy counterpart exists; if brand-new, finite-diff + equivariance + committed goldens).
 
 **Worked example — define and register.** Unlike the first five rows, a new model is **not free** (see
-the honest-boundary note below): it subclasses the backbone and may add a model-transform hook. It is
+the honest-boundary note below): it subclasses the composed model and may add a model-transform hook. It is
 still registered, not patched:
 
 ```python
@@ -596,15 +597,20 @@ from mace_torch.models import BaseMACE, register_model
 @register_model("MyElectrostatic")                  # decorator registers it; build.py finds it by name
 class MyElectrostatic(BaseMACE):
     def forward(self, graph):
-        features = super().forward(graph)           # the equivariant backbone (node features)
+        outputs = super().forward(graph)            # backbone then output layer: a MACEOutputs
         # add a k-space / SCF term that depends on positions and cell and couples into the
         # derivative engine — this is why a model is more than a readout (RFC-01 §6b.2)
-        return features
+        return outputs
 ```
 
 ```python
 build_model(ModelConfig(model="MyElectrostatic", observables=["energy", "forces"]))
 ```
+
+The hook is on the composed model rather than on `nn/backbone.py`, and that is forced rather than
+chosen: the term a model like `PolarMACE` adds is an **energy**, which does not exist until the output
+layer has run. The backbone produces node features and nothing else, so there is nothing there to add
+an energy to.
 
 No entry-point/pip step is shown because a model ships **inside** `mace-torch` (or a package that
 depends on it), not as a drop-in kernel/data plugin; the electrostatics solver *inside* it is the part
