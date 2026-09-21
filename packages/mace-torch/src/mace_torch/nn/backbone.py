@@ -38,7 +38,7 @@ from mace_core.observables import InputSpec
 from torch import Tensor, nn
 
 from mace_torch.nn.interaction import InteractionBlock, ResidualInteractionBlock
-from mace_torch.nn.layout import channel_layout_index, expanded_irreps
+from mace_torch.nn.layout import expanded_irreps
 from mace_torch.nn.node_inputs import NodeInputEmbedding
 from mace_torch.nn.product_basis import EquivariantProductBasisBlock
 
@@ -112,32 +112,32 @@ class MACEBackbone(nn.Module):
                 precision=precision,
             )
         )
+        # The embedding produces scalars only, one per channel. The higher
+        # irreps appear for the first time out of the first convolution, which
+        # is why that layer's node declaration is narrower than the rest.
+        # Scalars, plus whatever the declared node inputs carry, since that is
+        # where they are mixed in and an equivariant map cannot create an irrep
+        # its input lacks.
+        embedding_terms = ["0e"]
+        for spec in node_inputs:
+            for _, irrep in Irreps.parse(spec.irreps).terms:
+                if str(irrep) not in embedding_terms:
+                    embedding_terms.append(str(irrep))
+        self.embedding_irreps = "+".join(embedding_terms)
         self.node_embedding = backend.make_linear(
             LinearDescriptor(
                 irreps_in=f"{len(self.atomic_numbers)}x0e",
-                irreps_out=hidden_irreps,
+                irreps_out=expanded_irreps(self.embedding_irreps, num_features),
                 precision=precision,
             )
         )
 
-        self.node_inputs = (
-            NodeInputEmbedding(
-                backend,
-                list(node_inputs),
-                hidden_irreps=hidden_irreps,
-                num_features=num_features,
-                precision=precision,
-            )
-            if node_inputs
-            else None
-        )
-
-        # The message declaration is the edge attributes' own, which is what the
-        # trained artifacts carry: the convolution couples the node features
-        # with the harmonics and keeps what lands on those irreps.
         interactions, products = [], []
         for layer in range(num_layers):
-            node_per_channel = hidden_irreps
+            # The first layer reads the embedding, which is scalars. The last
+            # one produces scalars, because only its invariants are read out.
+            node_per_channel = self.embedding_irreps if layer == 0 else hidden_irreps
+            product_per_channel = "0e" if layer == num_layers - 1 else hidden_irreps
             if layer == 0:
                 interactions.append(
                     InteractionBlock(
@@ -159,7 +159,7 @@ class MACEBackbone(nn.Module):
                         irreps_node=node_per_channel,
                         irreps_edge=edge_irreps,
                         irreps_target=edge_irreps,
-                        irreps_skip_out=hidden_irreps,
+                        irreps_skip_out=product_per_channel,
                         num_radial=num_radial,
                         num_features=num_features,
                         num_elements=len(self.atomic_numbers),
@@ -171,21 +171,34 @@ class MACEBackbone(nn.Module):
                 EquivariantProductBasisBlock(
                     backend,
                     irreps_in=edge_irreps,
-                    irreps_out=hidden_irreps,
+                    irreps_out=product_per_channel,
                     correlation=correlation,
                     num_elements=len(self.atomic_numbers),
                     num_features=num_features,
                     precision=precision,
                 )
             )
+        self.node_inputs = (
+            NodeInputEmbedding(
+                backend,
+                list(node_inputs),
+                hidden_irreps=self.embedding_irreps,
+                num_features=num_features,
+                precision=precision,
+            )
+            if node_inputs
+            else None
+        )
+
+        # The message declaration is the edge attributes' own, which is what the
+        # trained artifacts carry: the convolution couples the node features
+        # with the harmonics and keeps what lands on those irreps.
+        self.layer_irreps = [
+            "0e" if layer == num_layers - 1 else hidden_irreps
+            for layer in range(num_layers)
+        ]
         self.interactions = nn.ModuleList(interactions)
         self.products = nn.ModuleList(products)
-        self.hidden_flat = expanded_irreps(hidden_irreps, num_features)
-        self.register_buffer(
-            "hidden_to_channels",
-            torch.tensor(channel_layout_index(hidden_irreps, num_features)),
-            persistent=False,
-        )
         self.width = Irreps.parse(hidden_irreps).dimension
 
     def element_index(self, atomic_numbers: Tensor) -> Tensor:
@@ -239,15 +252,8 @@ class MACEBackbone(nn.Module):
         )
         one_hot[torch.arange(num_nodes, device=positions.device), element] = 1.0
 
-        embedded = self.node_embedding(one_hot)
-        # The embedding produces one channel; the model carries `num_features`,
-        # so it is broadcast once here and stays flat and grouped from then on.
-        features = (
-            embedded.unsqueeze(1)
-            .expand(-1, self.num_features, -1)
-            .reshape(num_nodes, -1)[..., self.hidden_to_channels]
-            .contiguous()
-        )
+        # Scalars only, so the grouped layout is already what comes out.
+        features = self.node_embedding(one_hot)
         if self.node_inputs is not None:
             features = self.node_inputs(graph, features)
 
@@ -295,11 +301,15 @@ class MACEBackbone(nn.Module):
             layers = layers[:num_layers]
         # Grouped by irrep, so the scalars are the leading block: one per
         # channel, contiguous.
-        first_multiplicity, first_irrep = Irreps.parse(self.hidden_irreps).terms[0]
-        scalars = self.num_features * first_multiplicity * first_irrep.dimension
-        pieces = [
-            layer[..., :scalars] if invariants_only else layer for layer in layers
-        ]
+        pieces = []
+        for index, layer in enumerate(layers):
+            if not invariants_only:
+                pieces.append(layer)
+                continue
+            multiplicity, irrep = Irreps.parse(self.layer_irreps[index]).terms[0]
+            pieces.append(
+                layer[..., : self.num_features * multiplicity * irrep.dimension]
+            )
         stacked = torch.cat(pieces, dim=-1)
         if aggregation is None:
             return stacked
