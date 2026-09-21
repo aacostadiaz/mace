@@ -114,7 +114,11 @@ def test_rotation_equivariance():
     for layer, (before, after) in enumerate(zip(plain, rotated, strict=True)):
         assert_close(
             after,
-            rotate_features(before, expanded_irreps(HIDDEN, NUM_FEATURES), rotation)
+            rotate_features(
+                before,
+                expanded_irreps(model.layer_irreps[layer], NUM_FEATURES),
+                rotation,
+            )
             .detach()
             .numpy(),
             f"layer {layer} under a rotation",
@@ -129,15 +133,14 @@ def test_inversion_parity():
     plain = model(make_graph(positions, numbers))
     inverted = model(make_graph(-positions, numbers))
 
-    signs = []
-    for multiplicity, irrep in Irreps.parse(
-        expanded_irreps(HIDDEN, NUM_FEATURES)
-    ).terms:
-        sign = 1.0 if irrep.parity == 1 else -1.0
-        signs.extend([sign] * (multiplicity * irrep.dimension))
-    signs = np.array(signs)
-
     for layer, (before, after) in enumerate(zip(plain, inverted, strict=True)):
+        signs = []
+        for multiplicity, irrep in Irreps.parse(
+            expanded_irreps(model.layer_irreps[layer], NUM_FEATURES)
+        ).terms:
+            sign = 1.0 if irrep.parity == 1 else -1.0
+            signs.extend([sign] * (multiplicity * irrep.dimension))
+        signs = np.array(signs)
         assert_close(
             after, before.detach().numpy() * signs, f"layer {layer} under inversion"
         )
@@ -311,10 +314,16 @@ def test_descriptors_keep_only_the_invariants_by_default():
     positions, numbers = water_dimer()
     graph = make_graph(positions, numbers)
 
+    # One scalar block per layer; the last layer carries only its invariants,
+    # so the full view is narrower than twice the hidden declaration.
     assert model.descriptors(graph).shape == (len(numbers), 2 * model.num_features)
+    full = sum(
+        model.num_features * Irreps.parse(irreps).dimension
+        for irreps in model.layer_irreps
+    )
     assert model.descriptors(graph, invariants_only=False).shape == (
         len(numbers),
-        2 * model.num_features * Irreps.parse(HIDDEN).dimension,
+        full,
     )
 
 
