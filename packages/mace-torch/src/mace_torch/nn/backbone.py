@@ -37,7 +37,8 @@ from mace_core.kernels.descriptors import (
 from mace_core.observables import InputSpec
 from torch import Tensor, nn
 
-from mace_torch.nn.interaction import InteractionBlock
+from mace_torch.nn.interaction import InteractionBlock, ResidualInteractionBlock
+from mace_torch.nn.layout import channel_layout_index, expanded_irreps
 from mace_torch.nn.node_inputs import NodeInputEmbedding
 from mace_torch.nn.product_basis import EquivariantProductBasisBlock
 
@@ -131,43 +132,60 @@ class MACEBackbone(nn.Module):
             else None
         )
 
-        interactions, products, radial_maps = [], [], []
+        # The message declaration is the edge attributes' own, which is what the
+        # trained artifacts carry: the convolution couples the node features
+        # with the harmonics and keeps what lands on those irreps.
+        interactions, products = [], []
         for layer in range(num_layers):
-            interaction = InteractionBlock(
-                backend,
-                irreps_node=hidden_irreps,
-                irreps_edge=edge_irreps,
-                irreps_out=hidden_irreps,
-                num_radial=num_radial,
-                num_features=num_features,
-                num_elements=len(self.atomic_numbers),
-                avg_num_neighbors=avg_num_neighbors,
-                residual=layer > 0,
-                precision=precision,
-            )
-            interactions.append(interaction)
-            radial_maps.append(
-                nn.Linear(
-                    num_radial,
-                    interaction.num_paths * num_features,
-                    dtype=torch.float64 if precision == "float64" else torch.float32,
+            node_per_channel = hidden_irreps
+            if layer == 0:
+                interactions.append(
+                    InteractionBlock(
+                        backend,
+                        irreps_node=node_per_channel,
+                        irreps_edge=edge_irreps,
+                        irreps_target=edge_irreps,
+                        num_radial=num_radial,
+                        num_features=num_features,
+                        num_elements=len(self.atomic_numbers),
+                        avg_num_neighbors=avg_num_neighbors,
+                        precision=precision,
+                    )
                 )
-            )
+            else:
+                interactions.append(
+                    ResidualInteractionBlock(
+                        backend,
+                        irreps_node=node_per_channel,
+                        irreps_edge=edge_irreps,
+                        irreps_target=edge_irreps,
+                        irreps_skip_out=hidden_irreps,
+                        num_radial=num_radial,
+                        num_features=num_features,
+                        num_elements=len(self.atomic_numbers),
+                        avg_num_neighbors=avg_num_neighbors,
+                        precision=precision,
+                    )
+                )
             products.append(
                 EquivariantProductBasisBlock(
                     backend,
-                    irreps_in=hidden_irreps,
+                    irreps_in=edge_irreps,
                     irreps_out=hidden_irreps,
                     correlation=correlation,
                     num_elements=len(self.atomic_numbers),
                     num_features=num_features,
-                    residual=layer > 0,
                     precision=precision,
                 )
             )
         self.interactions = nn.ModuleList(interactions)
         self.products = nn.ModuleList(products)
-        self.radial_maps = nn.ModuleList(radial_maps)
+        self.hidden_flat = expanded_irreps(hidden_irreps, num_features)
+        self.register_buffer(
+            "hidden_to_channels",
+            torch.tensor(channel_layout_index(hidden_irreps, num_features)),
+            persistent=False,
+        )
         self.width = Irreps.parse(hidden_irreps).dimension
 
     def element_index(self, atomic_numbers: Tensor) -> Tensor:
@@ -221,28 +239,30 @@ class MACEBackbone(nn.Module):
         )
         one_hot[torch.arange(num_nodes, device=positions.device), element] = 1.0
 
-        features = self.node_embedding(one_hot)
-        features = features.unsqueeze(1).expand(-1, self.num_features, -1).contiguous()
+        embedded = self.node_embedding(one_hot)
+        # The embedding produces one channel; the model carries `num_features`,
+        # so it is broadcast once here and stays flat and grouped from then on.
+        features = (
+            embedded.unsqueeze(1)
+            .expand(-1, self.num_features, -1)
+            .reshape(num_nodes, -1)[..., self.hidden_to_channels]
+            .contiguous()
+        )
         if self.node_inputs is not None:
             features = self.node_inputs(graph, features)
 
         outputs = []
-        for interaction, product, radial_map in zip(
-            self.interactions, self.products, self.radial_maps, strict=True
-        ):
-            weights = radial_map(radial).reshape(
-                radial.shape[0], interaction.num_paths, self.num_features
-            )
-            messages = interaction(
+        for interaction, product in zip(self.interactions, self.products, strict=True):
+            message, carried = interaction(
                 features,
                 edge_attributes,
-                weights,
+                radial,
                 one_hot,
                 sender,
                 receiver,
                 num_nodes,
             )
-            features = product(messages, element)
+            features = product(message, element, carried)
             if self.locality is not None:
                 features = self.locality(features, graph)
             outputs.append(features)
@@ -273,11 +293,14 @@ class MACEBackbone(nn.Module):
         layers = self.forward(graph)
         if num_layers is not None:
             layers = layers[:num_layers]
-        scalars = Irreps.parse(self.hidden_irreps).terms[0][1].dimension
+        # Grouped by irrep, so the scalars are the leading block: one per
+        # channel, contiguous.
+        first_multiplicity, first_irrep = Irreps.parse(self.hidden_irreps).terms[0]
+        scalars = self.num_features * first_multiplicity * first_irrep.dimension
         pieces = [
             layer[..., :scalars] if invariants_only else layer for layer in layers
         ]
-        stacked = torch.cat([piece.reshape(piece.shape[0], -1) for piece in pieces], -1)
+        stacked = torch.cat(pieces, dim=-1)
         if aggregation is None:
             return stacked
         if aggregation == "mean":
