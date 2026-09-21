@@ -32,6 +32,7 @@ from mace_core.kernels.descriptors import (
     SphericalHarmonicsDescriptor,
     SymmetricContractionDescriptor,
 )
+from mace_core.kernels.paths import channelwise_paths
 from mace_core.kernels.protocol import DISPATCHED_OPS, REFERENCE_ONLY_OPS
 from torch import Tensor, nn
 
@@ -227,28 +228,42 @@ class ReferenceSymmetricContraction(nn.Module):
 def _coupling_coefficients(descriptor: ChannelwiseTPConvDescriptor) -> np.ndarray:
     """The Clebsch-Gordan coefficients of the message-passing product.
 
-    One path per ``(node irrep, edge irrep, output irrep)`` the selection rules
-    allow, in the pinned irrep order, written into a dense
-    ``[paths, dim_out, dim_in, dim_edge]`` array. Dense because this is the
-    reference; a backend with a real kernel keeps them sparse.
+    One block per path, in the order
+    :func:`~mace_core.kernels.paths.channelwise_paths` pins, written into a
+    dense ``[paths, dim_paths, dim_node, dim_edge]`` array.
+
+    The output axis spans the **paths**, not the target irreps. Two couplings
+    landing on the same irrep keep separate slices, because the linear that
+    follows mixes them and can send one copy where the other does not go.
+    Summing them here would be a smaller model wearing the same shape, and it
+    would not match a trained artifact.
+
+    Dense because this is the reference; a backend with a real kernel keeps
+    them sparse.
     """
     node = Irreps.parse(descriptor.irreps_node)
     edge = Irreps.parse(descriptor.irreps_edge)
-    target = Irreps.parse(descriptor.irreps_out)
-    paths = []
-    for out_slice, out_ir in target.slices():
-        for in_slice, in_ir in node.slices():
-            for edge_slice, edge_ir in edge.slices():
-                if out_ir not in set(in_ir.couple(edge_ir)):
-                    continue
-                block = np.zeros((target.dimension, node.dimension, edge.dimension))
-                block[out_slice, in_slice, edge_slice] = wigner_3j_real(
-                    out_ir.degree, in_ir.degree, edge_ir.degree
-                )
-                paths.append(block)
+    paths = channelwise_paths(
+        descriptor.irreps_node, descriptor.irreps_edge, descriptor.irreps_out
+    )
+    node_slices = list(node.slices())
+    edge_slices = list(edge.slices())
+    width = sum(path.irrep.dimension for path in paths)
     if not paths:
-        return np.zeros((0, target.dimension, node.dimension, edge.dimension))
-    return np.stack(paths)
+        return np.zeros((0, 0, node.dimension, edge.dimension))
+
+    blocks = []
+    offset = 0
+    for path in paths:
+        block = np.zeros((width, node.dimension, edge.dimension))
+        in_slice, in_ir = node_slices[path.node_term]
+        edge_slice, edge_ir = edge_slices[path.edge_term]
+        block[offset : offset + path.irrep.dimension, in_slice, edge_slice] = (
+            wigner_3j_real(path.irrep.degree, in_ir.degree, edge_ir.degree)
+        )
+        blocks.append(block)
+        offset += path.irrep.dimension
+    return np.stack(blocks)
 
 
 class ReferenceChannelwiseTPConv(nn.Module):

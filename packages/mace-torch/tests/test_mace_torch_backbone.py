@@ -24,10 +24,12 @@ from mace_core.clebsch_gordan.real_basis import wigner_d_real
 from mace_core.neighbors import get_neighborhood
 from mace_torch.backends.reference import ReferenceBackend
 from mace_torch.nn.backbone import MACEBackbone
+from mace_torch.nn.layout import expanded_irreps
 
 ATOMIC_NUMBERS = [1, 8]
 CUTOFF = 5.0
 HIDDEN = "0e+1o"
+NUM_FEATURES = 4
 
 
 def make_model(**overrides):
@@ -36,7 +38,7 @@ def make_model(**overrides):
     settings = dict(
         atomic_numbers=ATOMIC_NUMBERS,
         num_layers=2,
-        num_features=4,
+        num_features=NUM_FEATURES,
         lmax=2,
         hidden_irreps=HIDDEN,
         correlation=2,
@@ -82,7 +84,12 @@ def random_rotation(seed):
 
 
 def rotate_features(features, irreps, rotation):
-    """The rotation applied to each irrep block of the last axis."""
+    """The rotation applied to each irrep block of the last axis.
+
+    The declaration passed here is the **expanded** one: node features are flat
+    and grouped by irrep, so a block holds every channel's copy of one irrep,
+    not one channel's whole declaration.
+    """
     blocks, offset = [], 0
     for multiplicity, irrep in Irreps.parse(irreps).terms:
         wigner = torch.tensor(
@@ -107,7 +114,9 @@ def test_rotation_equivariance():
     for layer, (before, after) in enumerate(zip(plain, rotated, strict=True)):
         assert_close(
             after,
-            rotate_features(before, HIDDEN, rotation).detach().numpy(),
+            rotate_features(before, expanded_irreps(HIDDEN, NUM_FEATURES), rotation)
+            .detach()
+            .numpy(),
             f"layer {layer} under a rotation",
         )
 
@@ -121,7 +130,9 @@ def test_inversion_parity():
     inverted = model(make_graph(-positions, numbers))
 
     signs = []
-    for multiplicity, irrep in Irreps.parse(HIDDEN).terms:
+    for multiplicity, irrep in Irreps.parse(
+        expanded_irreps(HIDDEN, NUM_FEATURES)
+    ).terms:
         sign = 1.0 if irrep.parity == 1 else -1.0
         signs.extend([sign] * (multiplicity * irrep.dimension))
     signs = np.array(signs)

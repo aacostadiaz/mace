@@ -27,6 +27,7 @@ from mace_core.kernels import (
     SymmetricContractionDescriptor,
     UnsupportedDescriptorError,
 )
+from mace_core.kernels.paths import channelwise_paths
 from mace_torch.backends.reference import ReferenceBackend
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -134,6 +135,18 @@ def chain(backend):
             irreps_node="0e+1o", irreps_edge="0e+1o", irreps_out="0e+1o"
         )
     )
+    # The convolution emits one block per coupling path, keeping two couplings
+    # onto the same irrep apart, so a linear maps them down before the
+    # contraction. The real pipeline has the same step for the same reason.
+    paths = channelwise_paths("0e+1o", "0e+1o", "0e+1o")
+    down = backend.make_linear(
+        LinearDescriptor(
+            irreps_in="+".join(str(path.irrep) for path in paths),
+            irreps_out="0e+1o",
+        )
+    )
+    with torch.no_grad():
+        down.weight.uniform_(-1, 1)
     contraction = backend.make_symmetric_contraction(
         SymmetricContractionDescriptor(
             irreps_in="0e+1o",
@@ -164,7 +177,7 @@ def chain(backend):
             features, attributes, weights, sender, receiver, positions.shape[0]
         )
         nodes = torch.zeros(positions.shape[0], dtype=torch.long)
-        site = contraction(messages, nodes)
+        site = contraction(down(messages), nodes)
         return reduce(site.flatten(1), nodes, 1).sum()
 
     return energy
