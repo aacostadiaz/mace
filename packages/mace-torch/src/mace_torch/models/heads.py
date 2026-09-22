@@ -18,6 +18,7 @@ from __future__ import annotations
 import torch
 from mace_core.clebsch_gordan.irreps import Irreps
 from mace_core.kernels.descriptors import LinearDescriptor
+from mace_core.kernels.precision import Precision
 from mace_core.observables import ObservableSpec
 from torch import Tensor, nn
 
@@ -134,7 +135,7 @@ class ObservableHead(nn.Module):
         num_layers: int,
         nonlinear: bool = False,
         hidden_scalars: int = 16,
-        precision: str = "float64",
+        precision: Precision = "float64",
     ) -> None:
         super().__init__()
         self.spec = spec
@@ -212,7 +213,7 @@ class _GatedReadout(nn.Module):
         irreps_in: str,
         irreps_out: str,
         hidden_scalars: int,
-        precision: str,
+        precision: Precision,
     ) -> None:
         super().__init__()
         out = Irreps.parse(irreps_out)
