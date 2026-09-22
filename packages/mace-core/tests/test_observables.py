@@ -5,15 +5,18 @@ in YAML text and assert what comes out. If any of them needed a new branch in
 ``mace_core`` to pass, the abstraction would not be doing its job.
 """
 
+from importlib.resources import files
+
 import pytest
+import yaml
 from mace_core.observables import (
+    DEFAULTS_RESOURCE,
     DerivativeRequest,
     InputSpec,
     IrrepsGrammarError,
     ObservableCatalogue,
     ObservableSpec,
-    derivative_name,
-    derivative_sign,
+    default_derivative_name,
     irreps_dimension,
     load_catalogue,
     load_default_catalogue,
@@ -29,7 +32,7 @@ inputs:
     irreps: "1o"
     per_atom: true
     units: "Å"
-  - name: cell
+  - name: strain
     irreps: "0e+2e"
     per_atom: false
     units: "1"
@@ -93,7 +96,6 @@ def test_a_malformed_spec_names_the_observable_and_the_grammar():
             irreps="rank2",
             per_atom=True,
             units="e*Å^2",
-            normalization="none",
         )
     message = str(caught.value)
     assert "quadrupole" in message
@@ -106,22 +108,6 @@ def test_a_malformed_spec_names_the_observable_and_the_grammar():
 # ---------------------------------------------------------------------------
 
 
-def test_normalization_is_required_and_closed():
-    # Both calls are rejected by the type checker as well, which is the point:
-    # the field is a closed Literal, so a wrong value is caught statically and
-    # at runtime. The ignores are what let the runtime half be tested.
-    with pytest.raises(ValidationError):
-        ObservableSpec(name="q", irreps="0e", per_atom=False, units="eV")  # ty: ignore[missing-argument]
-    with pytest.raises(ValidationError):
-        ObservableSpec(
-            name="q",
-            irreps="0e",
-            per_atom=False,
-            units="eV",
-            normalization="minmax",  # ty: ignore[invalid-argument-type]
-        )
-
-
 def test_an_unknown_field_is_an_error_rather_than_ignored():
     with pytest.raises(ValidationError):
         ObservableSpec(
@@ -129,7 +115,6 @@ def test_an_unknown_field_is_an_error_rather_than_ignored():
             irreps="0e",
             per_atom=False,
             units="eV",
-            normalization="none",
             weight=3.0,  # ty: ignore[unknown-argument]
         )
 
@@ -141,16 +126,13 @@ def test_a_name_that_is_not_an_identifier_is_rejected():
             irreps="0e",
             per_atom=True,
             units="e",
-            normalization="none",
         )
     assert "identifier" in str(caught.value)
 
 
 def test_units_may_not_be_empty():
     with pytest.raises(ValidationError):
-        ObservableSpec(
-            name="q", irreps="0e", per_atom=False, units="", normalization="none"
-        )
+        ObservableSpec(name="q", irreps="0e", per_atom=False, units="")
 
 
 # ---------------------------------------------------------------------------
@@ -159,31 +141,71 @@ def test_units_may_not_be_empty():
 
 
 @pytest.mark.parametrize(
-    ("quantity", "wrt", "name", "sign"),
-    [
-        ("energy", "pos", "forces", -1),
-        ("energy", "cell", "stress", +1),
-        ("energy", "magmom", "magforces", -1),
-    ],
-)
-def test_the_three_special_cases_keep_their_names_and_signs(quantity, wrt, name, sign):
-    assert derivative_name(quantity, wrt) == name
-    assert derivative_sign(quantity, wrt) == sign
-
-
-@pytest.mark.parametrize(
     ("quantity", "wrt", "name"),
     [
         ("dipole", "pos", "d_dipole_d_pos"),
-        ("dipole", "cell", "d_dipole_d_cell"),
+        ("dipole", "strain", "d_dipole_d_strain"),
         ("polarizability", "pos", "d_polarizability_d_pos"),
         ("energy", "elec_temp", "d_energy_d_elec_temp"),
         ("quadrupole", "magmom", "d_quadrupole_d_magmom"),
     ],
 )
-def test_everything_else_follows_the_rule(quantity, wrt, name):
-    assert derivative_name(quantity, wrt) == name
-    assert derivative_sign(quantity, wrt) == +1
+def test_an_undeclared_name_follows_the_rule(quantity, wrt, name):
+    assert default_derivative_name(quantity, wrt) == name
+    spec = ObservableSpec(name=quantity, irreps="0e", per_atom=False, units="eV")
+    assert spec.derivative_name(wrt) == name
+    assert spec.derivative_sign(wrt) == +1
+
+
+def test_a_declared_name_and_sign_win_over_the_rule():
+    """The whole point: a quantity with a name of its own says so in the file."""
+    spec = ObservableSpec(
+        name="energy",
+        irreps="0e",
+        per_atom=False,
+        units="eV",
+        derivatives=[{"wrt": "magmom", "name": "magforces", "sign": -1}],
+    )
+    assert spec.derivative_name("magmom") == "magforces"
+    assert spec.derivative_sign("magmom") == -1
+
+
+def test_an_input_that_was_not_requested_still_has_a_name():
+    """Naming works for any declared input, requested or not."""
+    spec = ObservableSpec(
+        name="energy",
+        irreps="0e",
+        per_atom=False,
+        units="eV",
+        derivatives=[{"wrt": "pos", "name": "forces", "sign": -1}],
+    )
+    assert spec.derivative_name("strain") == "d_energy_d_strain"
+    assert spec.derivative_sign("strain") == +1
+
+
+def test_a_name_without_a_sign_is_refused():
+    """A renamed derivative inheriting +1 in silence trains inverted forces."""
+    with pytest.raises(ValidationError, match="declares no sign"):
+        DerivativeRequest(wrt="pos", name="forces")
+
+
+@pytest.mark.parametrize("sign", [0, 2, -3])
+def test_a_sign_that_is_not_plus_or_minus_one_is_refused(sign):
+    with pytest.raises(ValidationError, match="A sign is \\+1 or -1"):
+        DerivativeRequest(wrt="pos", name="forces", sign=sign)
+
+
+def test_a_custom_name_may_not_imitate_the_generated_spelling():
+    """`d_<q>_d_<x>` states which quantity was differentiated. A custom name
+    wearing that spelling would be stating something that is not true."""
+    with pytest.raises(ValidationError, match="spelled like the grammar"):
+        DerivativeRequest(wrt="pos", name="d_dipole_d_pos", sign=+1)
+
+
+def test_a_sign_alone_needs_no_name():
+    request = DerivativeRequest(wrt="pos", sign=-1)
+    assert request.name is None
+    assert request.sign == -1
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +216,31 @@ def test_everything_else_follows_the_rule(quantity, wrt, name):
 def test_the_defaults_declare_energy_and_its_two_derivatives():
     catalogue = load_default_catalogue()
     assert catalogue.names() == ("energy", "forces", "stress")
-    assert [spec.name for spec in catalogue.inputs] == ["pos", "cell"]
+
+
+def test_the_shipped_names_and_signs_come_from_the_file_and_not_from_code():
+    """The reason the table was removed: this is now a property of the data.
+
+    If these were still special-cased in code, the assertion would pass with
+    the declarations file saying nothing at all.
+    """
+    catalogue = load_default_catalogue()
+    resolved = {spec.name: spec.sign for spec in catalogue.requested_derivatives()}
+    assert resolved == {"forces": -1, "stress": +1}
+
+    stripped = yaml.safe_load(
+        files("mace_core").joinpath(DEFAULTS_RESOURCE).read_text(encoding="utf-8")
+    )
+    for observable in stripped["observables"]:
+        for request in observable.get("derivatives", []):
+            request.pop("name", None)
+            request.pop("sign", None)
+    bare = ObservableCatalogue.model_validate(stripped)
+    assert {spec.name for spec in bare.requested_derivatives()} == {
+        "d_energy_d_pos",
+        "d_energy_d_strain",
+    }
+    assert [spec.name for spec in catalogue.inputs] == ["pos", "strain"]
 
 
 def test_the_default_forces_row_is_the_negative_position_gradient():
@@ -204,11 +250,10 @@ def test_the_default_forces_row_is_the_negative_position_gradient():
     assert forces.per_atom is True
     assert forces.irreps == "1o"
     assert forces.units == "eV/Å"
-    assert forces.default_loss_weight == 100.0
 
 
 def test_the_default_stress_row_is_the_positive_strain_gradient():
-    stress = load_default_catalogue().derivative("energy", "cell")
+    stress = load_default_catalogue().derivative("energy", "strain")
     assert stress.name == "stress"
     assert stress.sign == +1
     assert stress.per_atom is False
@@ -228,26 +273,28 @@ observables:
     irreps: "0e+2e"
     per_atom: true
     units: "e*Å^2"
-    normalization: "rms"
-    default_loss_weight: 2.5
-    derivatives: [pos, cell]
+    derivatives: [pos, strain]
 """,
         tmp_path,
     )
     quadrupole = catalogue.observable("quadrupole")
     assert quadrupole.per_atom is True
     assert quadrupole.dimension == 6
-    assert quadrupole.default_loss_weight == 2.5
     assert catalogue.names() == (
         "quadrupole",
         "d_quadrupole_d_pos",
-        "d_quadrupole_d_cell",
+        "d_quadrupole_d_strain",
     )
 
 
 def test_a_new_input_feature_makes_its_derivative_declarable(tmp_path):
     """`magmom` is the case that pays for the grammar being written over
-    declared inputs rather than over positions and the cell."""
+    declared inputs rather than over positions and the strain.
+
+    It is also the case that pays for the name and the sign living in the file.
+    `magforces` used to be a row in a table inside this package, and this
+    catalogue reaches it with no code at all.
+    """
     catalogue = catalogue_from(
         """
   - name: magmom
@@ -260,11 +307,11 @@ observables:
     irreps: "0e"
     per_atom: false
     units: "eV"
-    normalization: "std"
     derivatives:
       - wrt: magmom
+        name: magforces
+        sign: -1
         units: "eV/muB"
-        default_loss_weight: 10.0
 """,
         tmp_path,
     )
@@ -274,7 +321,6 @@ observables:
     assert magforces.per_atom is True
     # A magnetic moment is an axial vector, so its conjugate force is too.
     assert magforces.irreps == "1e"
-    assert magforces.default_loss_weight == 10.0
     assert catalogue.names() == ("energy", "magforces")
 
 
@@ -286,7 +332,6 @@ observables:
     irreps: "0e"
     per_atom: false
     units: "eV"
-    normalization: "std"
     derivatives: [pos]
 """,
         tmp_path,
@@ -308,7 +353,6 @@ observables:
     irreps: "0e"
     per_atom: false
     units: "eV"
-    normalization: "std"
     derivatives: [elec_temp]
 """,
             tmp_path,
@@ -316,10 +360,31 @@ observables:
     message = str(caught.value)
     assert "energy" in message
     assert "elec_temp" in message
-    assert "['cell', 'pos']" in message
+    assert "['pos', 'strain']" in message
 
 
 def test_a_derived_name_may_not_collide_with_a_declared_observable(tmp_path):
+    with pytest.raises(ValidationError) as caught:
+        catalogue_from(
+            """
+observables:
+  - name: d_energy_d_pos
+    irreps: "1o"
+    per_atom: true
+    units: "eV/Å"
+  - name: energy
+    irreps: "0e"
+    per_atom: false
+    units: "eV"
+    derivatives: [pos]
+""",
+            tmp_path,
+        )
+    assert "'d_energy_d_pos'" in str(caught.value)
+
+
+def test_a_declared_name_may_not_collide_with_a_declared_observable(tmp_path):
+    """The same guard, now reachable through a name the file chose itself."""
     with pytest.raises(ValidationError) as caught:
         catalogue_from(
             """
@@ -328,13 +393,14 @@ observables:
     irreps: "1o"
     per_atom: true
     units: "eV/Å"
-    normalization: "rms"
   - name: energy
     irreps: "0e"
     per_atom: false
     units: "eV"
-    normalization: "std"
-    derivatives: [pos]
+    derivatives:
+      - wrt: pos
+        name: forces
+        sign: -1
 """,
             tmp_path,
         )
@@ -350,12 +416,10 @@ observables:
     irreps: "0e"
     per_atom: false
     units: "eV"
-    normalization: "std"
   - name: energy
     irreps: "0e"
     per_atom: false
     units: "eV"
-    normalization: "none"
 """,
             tmp_path,
         )
@@ -371,7 +435,6 @@ observables:
     irreps: "0e"
     per_atom: false
     units: "eV"
-    normalization: "std"
     derivatives: [pos, pos]
 """,
             tmp_path,
@@ -385,7 +448,7 @@ def test_an_unknown_observable_or_input_says_what_is_declared():
     assert "['energy']" in str(caught.value)
     with pytest.raises(KeyError) as caught:
         catalogue.input("magmom")
-    assert "['cell', 'pos']" in str(caught.value)
+    assert "['pos', 'strain']" in str(caught.value)
 
 
 def test_a_derivative_can_be_named_without_having_been_requested():
@@ -398,7 +461,6 @@ def test_a_derivative_can_be_named_without_having_been_requested():
                 irreps="1o",
                 per_atom=False,
                 units="Debye",
-                normalization="rms",
             )
         ],
     )
