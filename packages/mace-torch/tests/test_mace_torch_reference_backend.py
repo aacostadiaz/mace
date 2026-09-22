@@ -357,3 +357,39 @@ def test_the_skip_connection_advertises_the_weights_it_holds(backend):
     operation = backend.make_fully_connected_tp(descriptor)
     assert descriptor.weight_numel == operation.weight.numel()
     assert descriptor.weight_numel == operation.to_canonical()["weight"].numel()
+
+
+# ---------------------------------------------------------------------------
+# The radial bases, differentiated twice
+# ---------------------------------------------------------------------------
+
+#: Where a pair can legitimately sit and the arithmetic is most exposed. The
+#: cutoff itself is reachable: the neighbour list admits a distance equal to it.
+RADIAL_PROBES = (1e-8, 0.5, 2.5, 5.0 - 1e-12, 5.0)
+
+
+@pytest.mark.parametrize("kind", ["bessel", "gaussian", "chebyshev"])
+@pytest.mark.parametrize("length", RADIAL_PROBES)
+def test_a_radial_basis_differentiates_twice_everywhere_it_is_reached(
+    backend, kind, length
+):
+    """Force training differentiates the force, so a second derivative that
+    comes back NaN at one pair poisons the whole gradient and reports nothing.
+
+    The Chebyshev basis is why this exists. Evaluated as ``cos(n * acos(x))``
+    it is smooth in value and in first derivative, because the clamp zeroes the
+    gradient at the endpoints, and its *second* derivative was NaN at a pair
+    exactly at the cutoff. The polynomial itself has no singularity there; the
+    closed form put one in.
+    """
+    operation = backend.make_radial_basis(
+        RadialBasisDescriptor(kind=kind, num_basis=8, cutoff=5.0)
+    )
+    lengths = torch.tensor([[length]], requires_grad=True)
+    values = operation(lengths)
+    assert torch.isfinite(values).all()
+
+    (first,) = torch.autograd.grad(values.sum(), lengths, create_graph=True)
+    assert torch.isfinite(first).all(), f"{kind} first derivative at {length}"
+    (second,) = torch.autograd.grad(first.sum(), lengths)
+    assert torch.isfinite(second).all(), f"{kind} second derivative at {length}"
