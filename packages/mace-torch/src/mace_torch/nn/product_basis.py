@@ -17,6 +17,7 @@ from mace_core.kernels.descriptors import (
     LinearDescriptor,
     SymmetricContractionDescriptor,
 )
+from mace_core.kernels.precision import Precision
 from torch import Tensor, nn
 
 from mace_torch.nn.layout import (
@@ -60,7 +61,7 @@ class EquivariantProductBasisBlock(nn.Module):
         correlation: int,
         num_elements: int,
         num_features: int,
-        precision: str = "float64",
+        precision: Precision = "float64",
     ) -> None:
         super().__init__()
         self.num_features = num_features

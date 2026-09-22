@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 import torch
-from fm00_convert import (
+from tests.parity.fm00_convert import (
     contraction_weights_to_canonical,
     fully_connected_tp_weights_to_canonical,
     linear_weights_to_canonical,

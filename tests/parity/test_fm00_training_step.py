@@ -22,13 +22,13 @@ from pathlib import Path
 
 import pytest
 import torch
-from fm00_convert import (
+from tests.parity.fm00_convert import (
     build_config,
     energy_constants_to_canonical,
     recorded_basis,
     transfer_weights,
 )
-from fm00_projection import ProjectionError
+from tests.parity.fm00_projection import ProjectionError
 from mace_core.elements import AtomicNumberTable, ResolvedE0s
 from mace_core.kernels.precision import PrecisionConfig
 from mace_core.observables import ObservableSpec

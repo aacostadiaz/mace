@@ -17,12 +17,18 @@ from typing import Literal
 from mace_core.clebsch_gordan.irreps import Irreps
 from mace_core.kernels.precision import Precision
 
+#: Which radial basis a descriptor asks for. Named so a caller can type its
+#: own parameter as the enumeration rather than as a bare string, which is
+#: what leaves a wrong value unnoticed until the descriptor rejects it.
+RadialKind = Literal["bessel", "gaussian", "chebyshev"]
+
 __all__ = [
     "ChannelwiseTPConvDescriptor",
     "Descriptor",
     "FullyConnectedTPDescriptor",
     "LinearDescriptor",
     "RadialBasisDescriptor",
+    "RadialKind",
     "SegmentReduceDescriptor",
     "SphericalHarmonicsDescriptor",
     "SymmetricContractionDescriptor",
@@ -224,7 +230,7 @@ class RadialBasisDescriptor(Descriptor):
             descriptor stays hashable.
     """
 
-    kind: Literal["bessel", "gaussian", "chebyshev"] = "bessel"
+    kind: RadialKind = "bessel"
     num_basis: int = 8
     #: The order of the polynomial envelope that takes the basis to zero at the
     #: cutoff. It belongs to the model's cutoff setting rather than to the

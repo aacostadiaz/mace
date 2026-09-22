@@ -8,6 +8,7 @@ invented volume, or an electrostatic correction scaled away.
 
 import subprocess
 import sys
+from typing import Any
 
 import numpy as np
 import pytest
@@ -103,8 +104,11 @@ def test_the_callers_cell_is_never_written_to():
 
 
 def test_pbc_must_have_three_entries():
+    # Through a variable: the two-entry tuple is the thing being tested, and a
+    # checker is right to reject it written out against a three-tuple.
+    too_short: Any = (True, True)
     with pytest.raises(ValueError, match="three entries"):
-        get_neighborhood(np.zeros((1, 3)), 2.0, (True, True), np.eye(3))
+        get_neighborhood(np.zeros((1, 3)), 2.0, too_short, np.eye(3))
 
 
 # ---------------------------------------------------------------------------

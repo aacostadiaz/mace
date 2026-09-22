@@ -14,6 +14,9 @@ by holding it.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import cast
+
 import numpy as np
 import torch
 from mace_core.clebsch_gordan.irreps import Irreps
@@ -139,7 +142,7 @@ class _ConstantTensors(nn.Module):
     def __len__(self) -> int:
         return self.count
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Tensor]:
         return iter(getattr(self, f"table_{p}") for p in range(self.count))
 
 
@@ -198,11 +201,15 @@ class ReferenceSymmetricContraction(nn.Module):
         return [self.weights[base + order] for order in range(self.orders)]
 
     def forward(self, features: Tensor, element: Tensor) -> Tensor:
+        # `nn.ModuleList` erases what it holds, so the element type has to be
+        # said here. It is the one thing put into `self.bases`, two lines of
+        # the constructor away.
+        bases = cast("list[_ConstantTensors]", list(self.bases))
         pieces = [
             symmetric_contraction(
                 features, self._group(position), list(tables), element
             )
-            for position, tables in enumerate(self.bases)
+            for position, tables in enumerate(bases)
         ]
         return torch.cat(pieces, dim=-1)
 
@@ -274,6 +281,10 @@ def _coupling_coefficients(descriptor: ChannelwiseTPConvDescriptor) -> np.ndarra
 
 
 class ReferenceChannelwiseTPConv(nn.Module):
+    #: Annotated because `register_buffer` alone leaves it typed as a `Module`,
+    #: and then reading its shape reads as subscripting a module.
+    coefficients: Tensor
+
     """The message-passing tensor product. Node-level, always."""
 
     def __init__(self, descriptor: ChannelwiseTPConvDescriptor) -> None:
@@ -311,6 +322,10 @@ class ReferenceChannelwiseTPConv(nn.Module):
 
 
 class ReferenceFullyConnectedTP(nn.Module):
+    row: Tensor
+    column: Tensor
+    source: Tensor
+
     """The skip connection's tensor product against the element attributes.
 
     Only the case the models use is built: the second input is scalars, the
@@ -349,7 +364,11 @@ class ReferenceFullyConnectedTP(nn.Module):
     def forward(self, features: Tensor, attributes: Tensor) -> Tensor:
         empty = features.new_zeros(0)
         empty_rows = self.row.new_zeros(0)
-        total = None
+        # Zeros rather than `None`: with no scalar channels to weight by, the
+        # sum is over an empty set and that is zero. Accumulating from `None`
+        # made the declared return type a lie in exactly that case, and the
+        # `None` would have travelled into the rest of the model.
+        total = features.new_zeros(features.shape[0], self.dim_out)
         for scalar in range(self.num_scalars):
             mapped = equivariant_linear(
                 features,
@@ -361,8 +380,7 @@ class ReferenceFullyConnectedTP(nn.Module):
                 empty_rows,
                 self.dim_out,
             )
-            scaled = mapped * attributes[:, scalar : scalar + 1]
-            total = scaled if total is None else total + scaled
+            total = total + mapped * attributes[:, scalar : scalar + 1]
         return total
 
     def to_canonical(self) -> dict[str, Tensor]:
