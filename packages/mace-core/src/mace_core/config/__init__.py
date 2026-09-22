@@ -20,6 +20,7 @@ from mace_core.config.e0s import (
     E0Spec,
     E0sTable,
 )
+from mace_core.config.legacy import LEGACY_TRAIN_DESTS, LegacyFlagError, from_namespace
 from mace_core.config.loss import LossConfig
 from mace_core.config.model import ModelConfig, ReadoutConfig
 from mace_core.config.resolved import FinetuneConfig, PseudolabelConfig, ResolvedConfig
@@ -33,6 +34,7 @@ from mace_core.config.training import (
 )
 
 __all__ = [
+    "LEGACY_TRAIN_DESTS",
     "ConfigError",
     "ConfigSection",
     "ConfigWarning",
@@ -48,6 +50,7 @@ __all__ = [
     "FrozenSection",
     "GraphInputKeys",
     "HeadDataConfig",
+    "LegacyFlagError",
     "LossConfig",
     "ModelConfig",
     "PseudolabelConfig",
@@ -58,5 +61,6 @@ __all__ = [
     "SchedulerConfig",
     "StageTwoConfig",
     "TrainingConfig",
+    "from_namespace",
     "read_config_file",
 ]

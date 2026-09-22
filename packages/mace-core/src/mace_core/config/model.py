@@ -67,9 +67,13 @@ class ModelConfig(FrozenSection):
     """What to build, and what to make it produce.
 
     Args:
-        model: The registered model name. Unknown values fail here, through
-            ordinary config validation, rather than in a deprecation raise
-            inside model construction.
+        model: The registered model name, which unknown values fail on through
+            ordinary config validation rather than in a deprecation raise
+            inside model construction. The default is the registry's key and
+            deliberately not a class name: which names the registry uses is
+            the model tickets' decision, and spelling a legacy class here
+            would both pre-empt it and put a name on the list of things v1
+            must not port.
         observables: The declared properties, by observable-catalogue name.
             This is the list that creates heads and loss terms; nothing infers
             it from ``model``.
@@ -105,7 +109,7 @@ class ModelConfig(FrozenSection):
             and converting after, and canonical weights remove the conversion.
     """
 
-    model: str = "ScaleShiftMACE"
+    model: str = "scale_shift"
     observables: tuple[str, ...] = ("energy", "forces")
     r_max: float = 5.0
     num_interactions: int = 2
