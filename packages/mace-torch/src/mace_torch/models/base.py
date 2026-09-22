@@ -21,6 +21,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from mace_core.kernels.descriptors import RadialKind
+from mace_core.kernels.precision import Precision
 from mace_core.observables import InputSpec, ObservableSpec
 from mace_core.outputs import MACEOutput
 from torch import Tensor, nn
@@ -66,8 +68,8 @@ class MACEModel(nn.Module):
         cutoff: float = 5.0,
         correlation: int = 3,
         avg_num_neighbors: float = 1.0,
-        radial_kind: str = "bessel",
-        precision: str = "float64",
+        radial_kind: RadialKind = "bessel",
+        precision: Precision = "float64",
         pair_repulsion: bool = False,
         cutoff_order: int = 6,
         node_inputs: Sequence[InputSpec] = (),

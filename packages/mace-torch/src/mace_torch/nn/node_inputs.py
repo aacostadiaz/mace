@@ -17,6 +17,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from mace_core.kernels.descriptors import LinearDescriptor
+from mace_core.kernels.precision import Precision
 from mace_core.observables import InputSpec
 from torch import Tensor, nn
 
@@ -45,7 +46,7 @@ class NodeInputEmbedding(nn.Module):
         specs: Sequence[InputSpec],
         hidden_irreps: str,
         num_features: int,
-        precision: str = "float64",
+        precision: Precision = "float64",
     ) -> None:
         super().__init__()
         if not specs:
