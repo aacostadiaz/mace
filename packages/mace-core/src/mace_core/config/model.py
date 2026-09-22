@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import Literal
 
 from mace_core.config.section import FrozenSection
+from mace_core.kernels.descriptors import RadialKind
 
 __all__ = ["ClebschGordanBasis", "ModelConfig", "ReadoutConfig", "ScalingMethod"]
 
@@ -91,7 +92,7 @@ class ModelConfig(FrozenSection):
         interaction_first: The interaction block of the first layer, which
             has no incoming features to skip from.
         use_agnostic_product: Whether the product basis is element-agnostic.
-        radial_type: The radial basis.
+        radial_type: The radial basis, named as the descriptors name them.
         num_radial_basis: How many radial functions.
         num_cutoff_basis: Polynomial order of the cutoff envelope. It is also
             the repulsion's envelope order; defaulting it where a trained
@@ -123,7 +124,7 @@ class ModelConfig(FrozenSection):
     interaction: str = "RealAgnosticResidualInteractionBlock"
     interaction_first: str = "RealAgnosticResidualInteractionBlock"
     use_agnostic_product: bool = False
-    radial_type: str = "bessel"
+    radial_type: RadialKind = "bessel"
     num_radial_basis: int = 8
     num_cutoff_basis: int = 5
     distance_transform: str = "None"
