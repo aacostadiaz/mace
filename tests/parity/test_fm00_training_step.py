@@ -22,6 +22,13 @@ from pathlib import Path
 
 import pytest
 import torch
+from mace_core.elements import AtomicNumberTable, ResolvedE0s
+from mace_core.kernels.precision import PrecisionConfig
+from mace_core.observables import ObservableSpec
+from mace_torch.backends.reference import ReferenceBackend
+from mace_torch.models import EnergyOutputHead, MACEModel, ScaleShiftSpec
+from mace_torch.physics import DerivativeEngine
+
 from tests.parity.fm00_convert import (
     build_config,
     energy_constants_to_canonical,
@@ -29,12 +36,6 @@ from tests.parity.fm00_convert import (
     transfer_weights,
 )
 from tests.parity.fm00_projection import ProjectionError
-from mace_core.elements import AtomicNumberTable, ResolvedE0s
-from mace_core.kernels.precision import PrecisionConfig
-from mace_core.observables import ObservableSpec
-from mace_torch.backends.reference import ReferenceBackend
-from mace_torch.models import EnergyOutputHead, MACEModel, ScaleShiftSpec
-from mace_torch.physics import DerivativeEngine
 
 GOLDEN = Path(__file__).resolve().parents[1] / "golden"
 ENERGY = ObservableSpec(

@@ -24,8 +24,9 @@ scale is an op whose stored weights do not mean what they say.
 from __future__ import annotations
 
 import numpy as np
-from tests.parity.fm00_projection import ProjectionError, project_weights
 from mace_core.clebsch_gordan.irreps import Irreps
+
+from tests.parity.fm00_projection import ProjectionError, project_weights
 
 __all__ = [
     "contraction_weights_to_canonical",

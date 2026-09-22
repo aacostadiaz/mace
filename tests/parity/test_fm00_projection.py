@@ -19,6 +19,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+from mace_core.clebsch_gordan.reduced_basis import (
+    full_symmetric_tensor_product_basis,
+    reduced_symmetric_tensor_product_basis,
+)
+
 from tests.parity.fm00_projection import (
     ProjectionError,
     as_path_first,
@@ -26,10 +31,6 @@ from tests.parity.fm00_projection import (
     projection_matrix,
 )
 from tests.parity.independent_basis import symmetric_multiplicity
-from mace_core.clebsch_gordan.reduced_basis import (
-    full_symmetric_tensor_product_basis,
-    reduced_symmetric_tensor_product_basis,
-)
 
 #: One channel of the tiny anchors' contraction input, and the two irreps they
 #: read out. Taken from the anchor itself, not from its training recipe: the
