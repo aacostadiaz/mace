@@ -37,6 +37,10 @@ observables:
     irreps: "0e"
     per_atom: false
     units: "eV"
+    # An energy grows with the structure, so a loss compares it per atom. A
+    # force does not, and neither does a stress: a virial would, which is why
+    # this is asked of each derivative separately rather than inherited.
+    extensive: true
     derivatives:
       - wrt: pos
         name: forces
