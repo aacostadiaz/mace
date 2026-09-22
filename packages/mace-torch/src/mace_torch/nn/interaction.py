@@ -27,6 +27,7 @@ from mace_core.kernels.descriptors import (
     FullyConnectedTPDescriptor,
     LinearDescriptor,
 )
+from mace_core.kernels.precision import Precision
 from torch import Tensor, nn
 
 __all__ = ["InteractionBlock"]
@@ -62,7 +63,7 @@ class InteractionBlock(nn.Module):
         num_elements: int,
         avg_num_neighbors: float = 1.0,
         residual: bool = True,
-        precision: str = "float64",
+        precision: Precision = "float64",
     ) -> None:
         super().__init__()
         self.linear_up = backend.make_linear(

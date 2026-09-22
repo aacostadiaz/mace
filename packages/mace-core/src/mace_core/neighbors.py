@@ -96,26 +96,31 @@ def get_neighborhood(
     with a deepcopy at the call site, which has been vestigial since the
     function stopped mutating, and is not reproduced here.
     """
-    if pbc is None:
-        pbc = (False, False, False)
-    pbc = tuple(bool(flag) for flag in pbc)
-    if len(pbc) != 3:
-        raise ValueError(f"pbc must have three entries, got {len(pbc)}")
+    # New names rather than writing over the parameters: `pbc` arrives as any
+    # sequence and is used as a three-tuple, and `cell` arrives possibly absent
+    # and is used as a 3x3 array, so reassigning them makes each name mean two
+    # things in one function.
+    given = (False, False, False) if pbc is None else [bool(flag) for flag in pbc]
+    if len(given) != 3:
+        raise ValueError(f"pbc must have three entries, got {len(given)}")
+    first, second, third = given
+    flags: tuple[bool, bool, bool] = (first, second, third)
 
     positions = np.asarray(positions, dtype=float)
     # An absent or all-zero cell means there is no cell. The frozen tree writes
     # this as `cell.any() == np.zeros((3, 3)).any()`, which is true exactly
     # when the cell is all zeros and reads as if it compared two cells.
     if cell is None or not np.asarray(cell).any():
-        cell = np.identity(3, dtype=float)
-    cell = np.asarray(cell, dtype=float).reshape(3, 3)
+        lattice = np.identity(3, dtype=float)
+    else:
+        lattice = np.asarray(cell, dtype=float).reshape(3, 3)
 
-    search_box = _search_box(positions, cell, pbc, cutoff)
+    search_box = _search_box(positions, lattice, flags, cutoff)
 
-    if any(pbc):
-        returned = np.array(cell, dtype=float, copy=True)
+    if any(flags):
+        returned = np.array(lattice, dtype=float, copy=True)
         for axis in range(3):
-            if not pbc[axis] and not returned[axis].any():
+            if not flags[axis] and not returned[axis].any():
                 returned[axis] = search_box[axis]
     else:
         returned = search_box
@@ -124,7 +129,7 @@ def get_neighborhood(
 
     sender, receiver, unit_shifts = neighbour_list(
         quantities="ijS",
-        pbc=pbc,
+        pbc=flags,
         cell=search_box,
         positions=positions,
         cutoff=cutoff,
