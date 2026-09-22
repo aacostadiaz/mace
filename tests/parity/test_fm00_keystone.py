@@ -19,7 +19,7 @@ import ase.io
 import numpy as np
 import pytest
 import torch
-from fm00_convert import build_config, energy_constants_to_canonical, transfer_weights
+from tests.parity.fm00_convert import build_config, energy_constants_to_canonical, transfer_weights
 from mace_core.elements import AtomicNumberTable, ResolvedE0s
 from mace_core.kernels.precision import PrecisionConfig
 from mace_core.neighbors import get_neighborhood

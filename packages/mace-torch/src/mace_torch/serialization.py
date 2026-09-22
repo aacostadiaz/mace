@@ -27,11 +27,15 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import torch
 from safetensors.torch import load_file, save_file
 from torch import Tensor, nn
+
+#: What the caller's builder returns, so a load is typed as precisely as the
+#: builder is rather than as a bare module.
+Model = TypeVar("Model", bound=nn.Module)
 
 __all__ = [
     "FORMAT",
@@ -191,8 +195,8 @@ def read_sidecar(path: str | Path) -> dict[str, Any]:
 
 
 def load_checkpoint(
-    path: str | Path, build: Callable[[dict[str, Any]], nn.Module]
-) -> nn.Module:
+    path: str | Path, build: Callable[[dict[str, Any]], Model]
+) -> Model:
     """Rebuild a model and put its weights back.
 
     Args:
