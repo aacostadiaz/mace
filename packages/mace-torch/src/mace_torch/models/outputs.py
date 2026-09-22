@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
+from mace_core.kernels.precision import Precision
 from mace_core.observables import ObservableSpec
 from mace_core.outputs import CORE_FIELD_NAMES, FIELD_BY_OBSERVABLE, MACEOutput
 from torch import Tensor, nn
@@ -58,7 +59,7 @@ class MACEOutputs(nn.Module):
         num_features: int,
         energy_head: EnergyOutputHead | None = None,
         nonlinear: bool = True,
-        precision: str = "float64",
+        precision: Precision = "float64",
         hidden_scalars: int = 16,
     ) -> None:
         super().__init__()

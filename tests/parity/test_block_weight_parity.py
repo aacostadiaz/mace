@@ -16,17 +16,18 @@ from pathlib import Path
 
 import pytest
 import torch
-from fm00_convert import (
-    contraction_weights_to_canonical,
-    fully_connected_tp_weights_to_canonical,
-    linear_weights_to_canonical,
-)
 from mace_core.clebsch_gordan.irreps import Irreps
 from mace_core.kernels.descriptors import FullyConnectedTPDescriptor
 from mace_torch.backends.reference import ReferenceBackend
 from mace_torch.backends.reference.backend import ReferenceFullyConnectedTP
 from mace_torch.nn.layout import channel_layout_index
 from mace_torch.nn.product_basis import EquivariantProductBasisBlock
+
+from tests.parity.fm00_convert import (
+    contraction_weights_to_canonical,
+    fully_connected_tp_weights_to_canonical,
+    linear_weights_to_canonical,
+)
 
 ANCHORS = Path(__file__).resolve().parents[1] / "golden/models"
 

@@ -39,6 +39,12 @@ dependencies = [
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "tomli>=2.0",
+    # The neighbour list. Imported inside `get_neighborhood` rather than at the
+    # top, because it is the one heavy import here and a caller that only wants
+    # a `Configuration` should not pay for it; deferring an import does not
+    # make the dependency optional, and a distribution that did not declare it
+    # installs clean and then raises the first time a graph is built.
+    "matscipy>=0.8",
 ]
 
 [project.entry-points."mace.data_backends"]
