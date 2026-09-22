@@ -155,6 +155,18 @@ GRAPH_SCHEMA: Mapping[str, FieldSpec] = {
         "Weight of each graph in the loss. Zero on a padding graph, which is "
         "what makes padding cost nothing in the gradient.",
     ),
+    "head": FieldSpec(
+        ("n_graphs",),
+        "int64",
+        False,
+        "graphs",
+        "zero",
+        "Which head each graph belongs to, as a position in the model's head "
+        "list. It is data rather than something derived: two structures with "
+        "the same elements and the same geometry belong to different heads "
+        "when they came from different levels of theory, and the isolated-atom "
+        "energies the model subtracts are indexed by it.",
+    ),
 }
 
 
