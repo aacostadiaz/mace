@@ -34,6 +34,7 @@ from mace_core.kernels.descriptors import (
     LinearDescriptor,
 )
 from mace_core.kernels.paths import channelwise_paths
+from mace_core.kernels.precision import Precision
 from torch import Tensor, nn
 
 from mace_torch.nn.layout import (
@@ -69,7 +70,7 @@ class _Convolution(nn.Module):
         num_features: int,
         avg_num_neighbors: float,
         radial_hidden=DEFAULT_RADIAL_HIDDEN,
-        precision: str = "float64",
+        precision: Precision = "float64",
     ) -> None:
         super().__init__()
         paths = channelwise_paths(irreps_node, irreps_edge, irreps_target)
@@ -170,7 +171,7 @@ class InteractionBlock(nn.Module):
         num_elements: int,
         avg_num_neighbors: float = 1.0,
         radial_hidden=DEFAULT_RADIAL_HIDDEN,
-        precision: str = "float64",
+        precision: Precision = "float64",
     ) -> None:
         super().__init__()
         self.body = _Convolution(
@@ -239,7 +240,7 @@ class ResidualInteractionBlock(nn.Module):
         num_elements: int,
         avg_num_neighbors: float = 1.0,
         radial_hidden=DEFAULT_RADIAL_HIDDEN,
-        precision: str = "float64",
+        precision: Precision = "float64",
     ) -> None:
         super().__init__()
         self.body = _Convolution(

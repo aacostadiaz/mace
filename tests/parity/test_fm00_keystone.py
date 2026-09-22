@@ -19,7 +19,6 @@ import ase.io
 import numpy as np
 import pytest
 import torch
-from fm00_convert import build_config, energy_constants_to_canonical, transfer_weights
 from mace_core.elements import AtomicNumberTable, ResolvedE0s
 from mace_core.kernels.precision import PrecisionConfig
 from mace_core.neighbors import get_neighborhood
@@ -28,6 +27,12 @@ from mace_torch.backends.reference import ReferenceBackend
 from mace_torch.models import EnergyOutputHead, MACEModel, ScaleShiftSpec
 from mace_torch.physics import DerivativeEngine
 from mace_torch.serialization import load_checkpoint, save_checkpoint
+
+from tests.parity.fm00_convert import (
+    build_config,
+    energy_constants_to_canonical,
+    transfer_weights,
+)
 
 GOLDEN = Path(__file__).resolve().parents[1] / "golden"
 ENERGY = ObservableSpec(
