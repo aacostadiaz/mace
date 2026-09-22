@@ -124,6 +124,10 @@ def test_the_cutoff_is_zero_with_zero_slope_at_the_radius():
     value = cutoff(at_radius)
     value.backward()
     assert float(value) == 0.0
+    # Asserted before reading: a grad is None until autograd fills it, and a
+    # test that converted None would report a type error instead of saying the
+    # backward pass never ran.
+    assert at_radius.grad is not None
     assert float(at_radius.grad) == 0.0
 
 

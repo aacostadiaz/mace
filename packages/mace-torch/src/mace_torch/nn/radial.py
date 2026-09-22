@@ -46,6 +46,12 @@ class BesselBasis(nn.Module):
         dtype: Precision name.
     """
 
+    #: Annotated because `register_buffer` alone leaves the attribute
+    #: typed as a `Module`, and then arithmetic on it has no operators.
+    bessel_weights: Tensor
+    r_max: Tensor
+    prefactor: Tensor
+
     def __init__(
         self,
         r_max: float,
@@ -87,6 +93,10 @@ class ChebyshevBasis(nn.Module):
         dtype: Precision name.
     """
 
+    #: Annotated because `register_buffer` alone leaves the attribute
+    #: typed as a `Module`, and then arithmetic on it has no operators.
+    orders: Tensor
+
     def __init__(
         self,
         r_max: float,
@@ -111,6 +121,10 @@ class ChebyshevBasis(nn.Module):
 
 class GaussianBasis(nn.Module):
     """Gaussians evenly spaced from 0 to the cutoff."""
+
+    #: Annotated because `register_buffer` alone leaves the attribute
+    #: typed as a `Module`, and then arithmetic on it has no operators.
+    gaussian_weights: Tensor
 
     def __init__(
         self,
@@ -138,6 +152,11 @@ class PolynomialCutoff(nn.Module):
     continuous as an atom crosses the radius. Without it the discontinuity
     shows up as energy drift in a simulation rather than as an error.
     """
+
+    #: Annotated because `register_buffer` alone leaves the attribute
+    #: typed as a `Module`, and then arithmetic on it has no operators.
+    p: Tensor
+    r_max: Tensor
 
     def __init__(self, r_max: float, p: int = 6, dtype: str = "float64") -> None:
         super().__init__()
