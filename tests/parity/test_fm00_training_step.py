@@ -29,7 +29,6 @@ from fm00_convert import (
     transfer_weights,
 )
 from fm00_projection import ProjectionError
-
 from mace_core.elements import AtomicNumberTable, ResolvedE0s
 from mace_core.kernels.precision import PrecisionConfig
 from mace_core.observables import ObservableSpec
@@ -39,7 +38,11 @@ from mace_torch.physics import DerivativeEngine
 
 GOLDEN = Path(__file__).resolve().parents[1] / "golden"
 ENERGY = ObservableSpec(
-    name="energy", irreps="0e", per_atom=False, units="eV", normalization="none"
+    name="energy",
+    irreps="0e",
+    per_atom=False,
+    units="eV",
+    derivatives=[{"wrt": "pos", "name": "forces", "sign": -1, "units": "eV/A"}],
 )
 CHANNEL_IN = "0e+1o+2e"
 
@@ -85,7 +88,6 @@ def converted(legacy):
 )
 def test_the_converted_model_takes_the_same_training_step(fp64, anchor, reference):
     from mace.modules.loss import WeightedEnergyForcesLoss
-
     from tests.golden.anchors import anchor_batch, load_training_structures
     from tests.golden.train_step import LOSS_WEIGHTS, N_STRUCTURES
 
@@ -109,7 +111,7 @@ def test_the_converted_model_takes_the_same_training_step(fp64, anchor, referenc
         "num_graphs": int(batch.num_graphs),
         "head": torch.zeros(int(batch.num_graphs), dtype=torch.long),
     }
-    output = DerivativeEngine(model)(graph, compute=("forces",), training=True)
+    output = DerivativeEngine(model, ENERGY)(graph, compute=("forces",), training=True)
     loss = WeightedEnergyForcesLoss(**LOSS_WEIGHTS).to(torch.float64)(
         batch, {"energy": output.total_energy, "forces": output.forces}
     )
@@ -157,9 +159,7 @@ def test_the_recorded_basis_is_read_and_not_guessed(fp64):
             product.symmetric_contractions.contractions
         ):
             assert (
-                recorded_basis(
-                    contraction, CHANNEL_IN, targets[position], correlation
-                )
+                recorded_basis(contraction, CHANNEL_IN, targets[position], correlation)
                 == "full"
             )
 
@@ -169,7 +169,7 @@ def test_a_basis_that_is_neither_is_refused(fp64):
 
     class Unrecognised:
         weights_max = torch.zeros(3, 7, 16)
-        weights = [torch.zeros(3, 2, 16), torch.zeros(3, 1, 16)]
+        weights = (torch.zeros(3, 2, 16), torch.zeros(3, 1, 16))
 
     with pytest.raises(ProjectionError, match="written against neither"):
         recorded_basis(Unrecognised(), CHANNEL_IN, "0e", 3)
