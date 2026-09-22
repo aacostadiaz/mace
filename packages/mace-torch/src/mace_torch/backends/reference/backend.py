@@ -249,7 +249,12 @@ class ReferenceSymmetricContraction(nn.Module):
             group, tables = [], []
             for order in range(1, descriptor.correlation + 1):
                 array = build(descriptor.irreps_in, order, target)[target]
-                flat = array.reshape(array.shape[0], array.shape[1], -1)
+                # The trailing extent is computed rather than inferred with
+                # `-1`: an output irrep no path of this body order reaches has
+                # zero paths, and numpy cannot infer a dimension of an empty
+                # array. A `2e` output is exactly that at body order one.
+                trailing = int(np.prod(array.shape[2:])) if array.ndim > 2 else 1
+                flat = array.reshape(array.shape[0], array.shape[1], trailing)
                 tables.append(torch.tensor(flat, dtype=dtype))
                 group.append(
                     nn.Parameter(
