@@ -31,7 +31,11 @@ from mace_torch.serialization import load_checkpoint, save_checkpoint
 
 GOLDEN = Path(__file__).resolve().parents[1] / "golden"
 ENERGY = ObservableSpec(
-    name="energy", irreps="0e", per_atom=False, units="eV", normalization="none"
+    name="energy",
+    irreps="0e",
+    per_atom=False,
+    units="eV",
+    derivatives=[{"wrt": "pos", "name": "forces", "sign": -1, "units": "eV/A"}],
 )
 
 #: The fp64 row of the golden tolerance table. Stated here because this package
@@ -124,7 +128,7 @@ def test_a_converted_anchor_matches_the_live_legacy_model(fp64, anchor):
     """
     legacy = load_anchor(anchor)
     model, config = convert(legacy)
-    engine = DerivativeEngine(model)
+    engine = DerivativeEngine(model, ENERGY)
     numbers = [int(z) for z in legacy.atomic_numbers.tolist()]
 
     structures = ase.io.read(GOLDEN / "fixtures/tiny_train.xyz", index=":")
@@ -196,7 +200,7 @@ def test_a_converted_anchor_survives_the_checkpoint(fp64, tmp_path):
         legacy_batch(legacy, atoms).to_dict(), training=False, compute_force=True
     )
     graph = v1_graph(atoms, numbers, config["cutoff"])
-    result = DerivativeEngine(restored)(graph, compute=("forces",))
+    result = DerivativeEngine(restored, ENERGY)(graph, compute=("forces",))
 
     assert (
         abs(float(reference["energy"].detach()) - float(result.total_energy.detach()))
@@ -239,7 +243,7 @@ def test_energy_forces_and_stress_match_on_every_tiny_fixture(
         compute_force=True,
         compute_stress=True,
     )
-    result = DerivativeEngine(model)(
+    result = DerivativeEngine(model, ENERGY)(
         v1_graph(atoms, numbers, config["cutoff"]), compute=("forces", "stress")
     )
 
@@ -308,7 +312,7 @@ def test_both_stacks_take_the_same_training_step(fp64, isolated, anchor):
         "num_graphs": int(batch.num_graphs),
         "head": torch.zeros(int(batch.num_graphs), dtype=torch.long),
     }
-    output = DerivativeEngine(model)(graph, compute=("forces",), training=True)
+    output = DerivativeEngine(model, ENERGY)(graph, compute=("forces",), training=True)
     our_loss = loss_of(batch, {"energy": output.total_energy, "forces": output.forces})
     our_loss.backward()
 
@@ -349,7 +353,7 @@ def test_the_converted_energy_differentiates_twice(fp64, isolated):
     def energy(positions):
         moving = dict(graph)
         moving["positions"] = positions
-        return DerivativeEngine(model)(moving, compute=()).total_energy
+        return DerivativeEngine(model, ENERGY)(moving, compute=()).total_energy
 
     start = graph["positions"].clone().requires_grad_(True)
     assert torch.autograd.gradcheck(energy, (start,), eps=1e-6, atol=1e-7)
