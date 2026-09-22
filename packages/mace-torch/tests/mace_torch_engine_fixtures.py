@@ -19,8 +19,20 @@ from mace_torch.physics import DerivativeEngine
 
 CUTOFF = 5.0
 ATOMIC_NUMBERS = [1, 8]
+#: The energy, declaring the two derivatives that have names of their own. They
+#: are declared rather than derived because a name and a sign are a property of
+#: the quantity, not of a rule: `forces` and `magforces` are both the negative
+#: gradient, and anything else takes `d_energy_d_<input>` with the gradient's
+#: own sign.
 ENERGY = ObservableSpec(
-    name="energy", irreps="0e", per_atom=False, units="eV", normalization="none"
+    name="energy",
+    irreps="0e",
+    per_atom=False,
+    units="eV",
+    derivatives=[
+        {"wrt": "pos", "name": "forces", "sign": -1, "units": "eV/A"},
+        {"wrt": "magmom", "name": "magforces", "sign": -1},
+    ],
 )
 
 
@@ -71,7 +83,7 @@ def build_engine(seed: int = 0, inputs=()) -> DerivativeEngine:
                         parameter.shape, generator=generator, dtype=parameter.dtype
                     )
                 )
-    return DerivativeEngine(backbone, outputs, inputs=inputs)
+    return DerivativeEngine(backbone, outputs, ENERGY, inputs=inputs)
 
 
 def build_graph(positions, numbers, cell=None, pbc=(False, False, False)) -> dict:

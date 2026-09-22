@@ -15,7 +15,13 @@ import pytest
 import torch
 from conftest import fp64_only
 from mace_torch.physics import cell_volume_and_mask, prepare_inputs
-from mace_torch_engine_fixtures import build_engine, build_graph, crystal, molecule
+from mace_torch_engine_fixtures import (
+    ENERGY,
+    build_engine,
+    build_graph,
+    crystal,
+    molecule,
+)
 
 PERIODIC = (True, True, True)
 
@@ -196,12 +202,11 @@ def test_a_derivative_without_an_energy_says_what_is_missing():
     from mace_torch.physics import DerivativeEngine
 
     engine = build_engine()
-    dipole = ObservableSpec(
-        name="dipole", irreps="1o", per_atom=False, units="eV/A", normalization="none"
-    )
+    dipole = ObservableSpec(name="dipole", irreps="1o", per_atom=False, units="eV/A")
     without_energy = DerivativeEngine(
         engine.backbone,
         MACEOutputs(ReferenceBackend(), [dipole], "0e+1o", 4, 2),
+        ENERGY,
     )
     positions, numbers = molecule()
     with pytest.raises(ValueError, match="total_energy"):

@@ -43,11 +43,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 import torch
-from mace_core.observables import InputSpec
-from mace_core.observables.derivatives import (
-    derivative_name,
-    derivative_sign,
-)
+from mace_core.observables import InputSpec, ObservableSpec
 from mace_core.outputs import MACEOutput
 from torch import Tensor, nn
 
@@ -249,11 +245,13 @@ class DerivativeEngine(nn.Module):
         self,
         backbone: nn.Module,
         output_layer: nn.Module,
+        energy: ObservableSpec,
         inputs: Iterable[InputSpec] = (),
     ) -> None:
         super().__init__()
         self.backbone = backbone
         self.output_layer = output_layer
+        self.energy = energy
         self.inputs = list(inputs)
         self.differentiable_inputs = [
             spec for spec in self.inputs if spec.differentiable
@@ -262,12 +260,12 @@ class DerivativeEngine(nn.Module):
     def derivative_names(self) -> dict[str, str]:
         """The name each declared input's energy derivative is reported under.
 
-        Derived, never declared. ``pos`` reports as ``forces`` and ``magmom``
-        as ``magforces`` because those pairs have names of their own; anything
-        else follows ``d_energy_d_<input>``.
+        Read off the energy observable's own declaration. A pair with a name of
+        its own says so there, beside its sign and its units, so a quantity
+        like ``magforces`` needs no code here and no table anywhere.
         """
         return {
-            spec.name: derivative_name("energy", spec.name)
+            spec.name: self.energy.derivative_name(spec.name)
             for spec in self.differentiable_inputs
         }
 
@@ -295,7 +293,8 @@ class DerivativeEngine(nn.Module):
                 name
                 for name in unknown
                 if any(
-                    derivative_name("energy", spec.name) == name for spec in self.inputs
+                    self.energy.derivative_name(spec.name) == name
+                    for spec in self.inputs
                 )
             ]
             if undeclared:
@@ -404,7 +403,7 @@ class DerivativeEngine(nn.Module):
             gradient = by_name[spec.name]
             if gradient is None:
                 gradient = torch.zeros_like(prepared[spec.name])
-            output.extras[name] = derivative_sign("energy", spec.name) * gradient
+            output.extras[name] = self.energy.derivative_sign(spec.name) * gradient
 
         if "edge_forces" in wanted:
             gradient = by_name["vectors"]
