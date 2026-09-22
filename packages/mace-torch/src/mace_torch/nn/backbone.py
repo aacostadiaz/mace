@@ -32,8 +32,10 @@ from mace_core.clebsch_gordan.irreps import Irreps
 from mace_core.kernels.descriptors import (
     LinearDescriptor,
     RadialBasisDescriptor,
+    RadialKind,
     SphericalHarmonicsDescriptor,
 )
+from mace_core.kernels.precision import Precision
 from torch import Tensor, nn
 
 from mace_torch.nn.interaction import InteractionBlock
@@ -77,8 +79,8 @@ class MACEBackbone(nn.Module):
         cutoff: float = 5.0,
         correlation: int = 3,
         avg_num_neighbors: float = 1.0,
-        radial_kind: str = "bessel",
-        precision: str = "float64",
+        radial_kind: RadialKind = "bessel",
+        precision: Precision = "float64",
         locality: Callable[[Tensor, Mapping[str, Any]], Tensor] | None = None,
     ) -> None:
         super().__init__()
