@@ -14,6 +14,9 @@ by holding it.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import cast
+
 import numpy as np
 import torch
 from mace_core.clebsch_gordan.irreps import Irreps
@@ -138,7 +141,7 @@ class _ConstantTensors(nn.Module):
     def __len__(self) -> int:
         return self.count
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Tensor]:
         return iter(getattr(self, f"table_{p}") for p in range(self.count))
 
 
@@ -197,11 +200,15 @@ class ReferenceSymmetricContraction(nn.Module):
         return [self.weights[base + order] for order in range(self.orders)]
 
     def forward(self, features: Tensor, element: Tensor) -> Tensor:
+        # `nn.ModuleList` erases what it holds, so the element type has to be
+        # said here. It is the one thing put into `self.bases`, two lines of
+        # the constructor away.
+        bases = cast("list[_ConstantTensors]", list(self.bases))
         pieces = [
             symmetric_contraction(
                 features, self._group(position), list(tables), element
             )
-            for position, tables in enumerate(self.bases)
+            for position, tables in enumerate(bases)
         ]
         return torch.cat(pieces, dim=-1)
 
