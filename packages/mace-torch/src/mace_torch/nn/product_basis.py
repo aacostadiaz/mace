@@ -16,6 +16,7 @@ from mace_core.kernels.descriptors import (
     LinearDescriptor,
     SymmetricContractionDescriptor,
 )
+from mace_core.kernels.precision import Precision
 from torch import Tensor, nn
 
 __all__ = ["EquivariantProductBasisBlock"]
@@ -45,7 +46,7 @@ class EquivariantProductBasisBlock(nn.Module):
         num_elements: int,
         num_features: int,
         residual: bool = False,
-        precision: str = "float64",
+        precision: Precision = "float64",
     ) -> None:
         super().__init__()
         self.contraction = backend.make_symmetric_contraction(

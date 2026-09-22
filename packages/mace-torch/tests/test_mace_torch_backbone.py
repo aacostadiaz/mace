@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+from typing import Any
 
 import numpy as np
 import pytest
@@ -33,7 +34,10 @@ HIDDEN = "0e+1o"
 def make_model(**overrides):
     """A small backbone at the dtype the fixture has made default."""
     torch.manual_seed(0)
-    settings = dict(
+    # Annotated: a dict of mixed value types splatted into a typed constructor
+    # cannot be checked against it, and every parameter then reads as receiving
+    # the union of all of them.
+    settings: dict[str, Any] = dict(
         atomic_numbers=ATOMIC_NUMBERS,
         num_layers=2,
         num_features=4,
