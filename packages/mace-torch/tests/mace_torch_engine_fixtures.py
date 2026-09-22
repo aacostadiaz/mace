@@ -19,9 +19,7 @@ from mace_torch.physics import DerivativeEngine
 
 CUTOFF = 5.0
 ATOMIC_NUMBERS = [1, 8]
-ENERGY = ObservableSpec(
-    name="energy", irreps="0e", per_atom=False, units="eV", normalization="none"
-)
+ENERGY = ObservableSpec(name="energy", irreps="0e", per_atom=False, units="eV")
 
 
 def build_engine(seed: int = 0) -> DerivativeEngine:

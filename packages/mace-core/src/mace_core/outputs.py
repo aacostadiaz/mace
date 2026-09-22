@@ -32,6 +32,8 @@ from typing import Generic, TypeVar
 __all__ = [
     "CORE_FIELD_NAMES",
     "FIELD_BY_OBSERVABLE",
+    "OBSERVABLE_BY_FIELD",
+    "RETIRED_NAMES",
     "MACEOutput",
     "TensorT",
 ]
@@ -64,7 +66,8 @@ class MACEOutput(Generic[TensorT]):
             Note the sign: this is the **negative** of the derivative the
             stress is built from, so ``stress * volume == -virials`` rather
             than ``+virials``. The two are easy to state as one quantity up to
-            a volume, and they are not.
+            a volume, and they are not; the `virials` row of the observable
+            inventory carries the measurement.
         dipole: Total dipole per graph, shape ``(n_graphs, 3)``.
         extras: Every other declared observable, keyed by its
             :class:`~mace_core.observables.ObservableSpec` name.
@@ -102,6 +105,17 @@ class MACEOutput(Generic[TensorT]):
                 f"keys of `extras`: a consumer reading the field would see "
                 f"nothing. Assign them as fields instead."
             )
+        retired = sorted(name for name in self.extras if name in RETIRED_NAMES)
+        if retired:
+            replacements = ", ".join(
+                f"{name} -> {RETIRED_NAMES[name]}" for name in retired
+            )
+            raise ValueError(
+                f"{retired} are spellings this type retired and cannot be keys "
+                f"of `extras`: the value would sit beside the field holding the "
+                f"same quantity, which is the dual storage the rename exists to "
+                f"prevent. Assign the field instead ({replacements})."
+            )
 
     def get(self, name: str) -> TensorT | None:
         """The value stored under ``name``, or ``None`` if there is none.
@@ -117,12 +131,25 @@ class MACEOutput(Generic[TensorT]):
         return self.extras.get(name)
 
     def names(self) -> tuple[str, ...]:
-        """Every name that carries a value, core fields first, then ``extras``.
+        """Every **observable** name that carries a value, core fields first.
 
         A core field holding ``None`` was not computed and is left out, so this
         is what the model actually produced rather than what it could produce.
+
+        The names are the ones a declaration uses, not the storage fields, so
+        ``total_energy`` appears here as ``energy``. That is what makes
+        ``set(catalogue.names()) & set(output.names())`` mean what it reads as:
+        yielding the field name instead put the two vocabularies one alias
+        apart, and the intersection dropped the energy in silence while
+        ``"energy" in output`` was `True` the whole time. Use :meth:`get` to
+        reach a value, which accepts either spelling; ``getattr`` over these is
+        the one thing they are not for.
         """
-        present = [name for name in CORE_FIELD_NAMES if getattr(self, name) is not None]
+        present = [
+            OBSERVABLE_BY_FIELD.get(name, name)
+            for name in CORE_FIELD_NAMES
+            if getattr(self, name) is not None
+        ]
         present.extend(self.extras)
         return tuple(present)
 
@@ -131,10 +158,23 @@ class MACEOutput(Generic[TensorT]):
 
 
 #: The six fields that are part of the type. Derived from the dataclass rather
-#: than written out again, so the two cannot disagree.
+#: than written out again, so the two cannot disagree. These are **storage**
+#: names: `total_energy` appears here and `energy` does not. Correlating them
+#: with a catalogue's observable names needs :data:`OBSERVABLE_BY_FIELD`, or
+#: :meth:`MACEOutput.names`, which has already applied it.
 CORE_FIELD_NAMES: tuple[str, ...] = tuple(
     f.name for f in fields(MACEOutput) if f.name != "extras"
 )
+
+#: A legacy spelling this type does not carry, and the field that replaced it.
+#: These are **not** resolvable names: :meth:`MACEOutput.get` does not find a
+#: field through them, because carrying both spellings is exactly what the
+#: rename decided against. What they are is refused as ``extras`` keys, which
+#: is the half a rename cannot enforce on its own: without this, `extras`
+#: ``node_energy`` sits happily beside a filled ``node_energies`` field and the
+#: two hold the same quantity, which is the case the shadowing guard above
+#: exists to make impossible for the names it does know.
+RETIRED_NAMES: dict[str, str] = {"node_energy": "node_energies"}
 
 #: The one place an observable's name and its storage field differ. The field
 #: says "total" because the type also carries per-atom energies, while the
@@ -142,3 +182,10 @@ CORE_FIELD_NAMES: tuple[str, ...] = tuple(
 #: grammar's special cases are keyed on (``energy`` + positions -> ``forces``).
 #: Written down as one entry rather than left to each consumer to remember.
 FIELD_BY_OBSERVABLE: dict[str, str] = {"energy": "total_energy"}
+
+#: The same map read the other way, for going from storage back to the name a
+#: declaration uses. Inverted here rather than written out, so an entry added
+#: to one direction cannot be missing from the other.
+OBSERVABLE_BY_FIELD: dict[str, str] = {
+    field: observable for observable, field in FIELD_BY_OBSERVABLE.items()
+}

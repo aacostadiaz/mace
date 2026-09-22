@@ -196,9 +196,7 @@ def test_a_derivative_without_an_energy_says_what_is_missing():
     from mace_torch.physics import DerivativeEngine
 
     engine = build_engine()
-    dipole = ObservableSpec(
-        name="dipole", irreps="1o", per_atom=False, units="eV/A", normalization="none"
-    )
+    dipole = ObservableSpec(name="dipole", irreps="1o", per_atom=False, units="eV/A")
     without_energy = DerivativeEngine(
         engine.backbone,
         MACEOutputs(ReferenceBackend(), [dipole], "0e+1o", 4, 2),
