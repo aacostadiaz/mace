@@ -69,6 +69,8 @@ legacy cueq-only path produces.
 
 from mace_core.clebsch_gordan.coefficients import clebsch_gordan, wigner_3j_complex
 from mace_core.clebsch_gordan.conversion import (
+    PROJECTION_TOLERANCE,
+    BasisConversionError,
     from_canonical,
     full_to_reduced,
     ir_mul_to_mul_ir,
@@ -88,6 +90,8 @@ from mace_core.clebsch_gordan.reduced_basis import (
 )
 
 __all__ = [
+    "PROJECTION_TOLERANCE",
+    "BasisConversionError",
     "CouplingTree",
     "Irrep",
     "Irreps",
