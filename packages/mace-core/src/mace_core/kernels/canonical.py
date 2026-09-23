@@ -48,7 +48,9 @@ __all__ = [
     "KERNEL_SPEC_VERSION",
     "canonical_weight_shape",
     "fully_connected_tp_weight_scale",
+    "linear_bias_table",
     "linear_weight_scale",
+    "linear_weight_table",
     "symmetric_contraction_weight_scale",
 ]
 
@@ -109,3 +111,47 @@ def symmetric_contraction_weight_scale() -> float:
     """One. Stated as a function so that a backend reads a scale for every op
     rather than remembering which of the three is the exception."""
     return 1.0
+
+
+def linear_weight_table(irreps_in: str, irreps_out: str) -> dict[tuple[int, int], int]:
+    """Which canonical weight joins each output copy to each input copy.
+
+    A copy is one multiplicity of one term, counted in
+    :meth:`~mace_core.clebsch_gordan.irreps.Irreps.slices` order. An
+    equivariant linear map joins a copy only to copies of the same irrep, with
+    one weight per pair shared by the ``2l + 1`` components, so the table is
+    the whole of the map's structure. The order is the layout: output copies
+    outermost, and within one of them the matching input copies in
+    declaration order.
+
+    Returns:
+        ``{(output copy, input copy): weight index}``, for every pair the map
+        connects and no other.
+    """
+    table: dict[tuple[int, int], int] = {}
+    weight = 0
+    sources = list(Irreps.parse(irreps_in).slices())
+    for out_copy, (_, out_irrep) in enumerate(Irreps.parse(irreps_out).slices()):
+        for in_copy, (_, in_irrep) in enumerate(sources):
+            if in_irrep != out_irrep:
+                continue
+            table[(out_copy, in_copy)] = weight
+            weight += 1
+    return table
+
+
+def linear_bias_table(irreps_out: str) -> dict[int, int]:
+    """Which canonical bias entry belongs to each scalar output copy.
+
+    Only an even scalar can carry a bias: adding a constant to anything else
+    would pick out a direction. So the bias vector has one entry per ``0e``
+    output copy, in output order.
+
+    Returns:
+        ``{output copy: bias index}``, for the ``0e`` copies only.
+    """
+    table: dict[int, int] = {}
+    for out_copy, (_, irrep) in enumerate(Irreps.parse(irreps_out).slices()):
+        if irrep.degree == 0 and irrep.parity == 1:
+            table[out_copy] = len(table)
+    return table
