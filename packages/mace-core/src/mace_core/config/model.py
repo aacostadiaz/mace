@@ -27,10 +27,18 @@ from __future__ import annotations
 
 from typing import Literal
 
+from pydantic import Field
+
 from mace_core.config.section import FrozenSection
 from mace_core.kernels.descriptors import RadialKind
 
-__all__ = ["ClebschGordanBasis", "ModelConfig", "ReadoutConfig", "ScalingMethod"]
+__all__ = [
+    "ClebschGordanBasis",
+    "ModelConfig",
+    "PolarConfig",
+    "ReadoutConfig",
+    "ScalingMethod",
+]
 
 #: Which Clebsch-Gordan basis the weights are written against. ``"reduced"`` is
 #: the only value for new training; ``"full"`` exists to read an artifact
@@ -62,6 +70,51 @@ class ReadoutConfig(FrozenSection):
     gate: str = "silu"
     last_only: bool = False
     from_embedding: bool = False
+
+
+class PolarConfig(FrozenSection):
+    """The charge-aware part of the ``polar`` model.
+
+    Read only when ``model`` is ``polar``. The solver the long-range ops come
+    from, the systems they are set up for and the reciprocal-space cutoff are
+    the ``electrostatics`` section's, since they are what a solver is asked
+    for; what is here is the architecture around them. The defaults are the
+    frozen tree's command line's.
+
+    Args:
+        multipole_max_l: The highest multipole order of each atom's density.
+        multipole_width: The Gaussian width of that density, in Angstrom.
+        feature_max_l: The highest order the potential is projected onto.
+        feature_widths: The Gaussian widths it is projected onto, in Angstrom.
+        feature_norms: One divisor per order and width, order major, for the
+            projected potential. Unset divides by one.
+        num_recursion_steps: How many refinement steps the density takes. The
+            recursion is unrolled and differentiated through every step.
+        feature_self_interaction: Whether an atom's projection includes the
+            potential of its own density.
+        energy_self_interaction: Whether the electrostatic energy includes each
+            atom's interaction with its own density.
+        add_local_electron_energy: Whether the local energy of the density is
+            added to the total. It is computed and reported either way.
+        quadrupole_feature_corrections: Whether an open system's projection
+            carries the quadrupole correction as well.
+        field_update: The block each step predicts the increment with. One
+            exists.
+        field_readout: The block the local energy is read with. One exists.
+    """
+
+    multipole_max_l: int = Field(default=0, ge=0)
+    multipole_width: float = Field(default=1.0, gt=0)
+    feature_max_l: int = Field(default=0, ge=0)
+    feature_widths: tuple[float, ...] = (1.0,)
+    feature_norms: tuple[float, ...] | None = None
+    num_recursion_steps: int = Field(default=1, ge=0)
+    feature_self_interaction: bool = False
+    energy_self_interaction: bool = False
+    add_local_electron_energy: bool = False
+    quadrupole_feature_corrections: bool = False
+    field_update: Literal["embedded_one_body"] = "embedded_one_body"
+    field_readout: Literal["one_body_mlp"] = "one_body_mlp"
 
 
 class ModelConfig(FrozenSection):
@@ -108,6 +161,7 @@ class ModelConfig(FrozenSection):
         backend: The kernel backend by name. One field, where legacy has
             three flags whose third only chose between building in a layout
             and converting after, and canonical weights remove the conversion.
+        polar: The charge-aware architecture, read by the ``polar`` model.
     """
 
     model: str = "scale_shift"
@@ -135,3 +189,4 @@ class ModelConfig(FrozenSection):
     scaling: ScalingMethod = "rms_forces"
     readout: ReadoutConfig = ReadoutConfig()
     backend: str = "reference"
+    polar: PolarConfig = PolarConfig()

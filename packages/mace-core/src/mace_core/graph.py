@@ -27,6 +27,7 @@ from typing import Any, Literal
 import numpy as np
 
 __all__ = [
+    "GRAPH_INPUT_DEFAULTS",
     "GRAPH_SCHEMA",
     "FieldSpec",
     "GraphInfo",
@@ -167,6 +168,42 @@ GRAPH_SCHEMA: Mapping[str, FieldSpec] = {
         "when they came from different levels of theory, and the isolated-atom "
         "energies the model subtracts are indexed by it.",
     ),
+    "total_charge": FieldSpec(
+        ("n_graphs",),
+        "float64",
+        False,
+        "graphs",
+        "zero",
+        "Total charge of each structure, in units of the elementary charge. "
+        "Present only for a model that reads it.",
+    ),
+    "total_spin": FieldSpec(
+        ("n_graphs",),
+        "float64",
+        False,
+        "graphs",
+        "one",
+        "Spin multiplicity of each structure, 2S + 1, so a singlet is one. "
+        "Present only for a model that reads it.",
+    ),
+    "external_field": FieldSpec(
+        ("n_graphs", 3),
+        "float64",
+        False,
+        "graphs",
+        "zero",
+        "The applied electric field on each structure, in V/Angstrom. Present "
+        "only for a model that reads it.",
+    ),
+}
+
+#: What a structure that does not say has, for each per-structure input a model
+#: may read: neutral, a singlet, and no applied field. The value a file leaves
+#: out, not a padding value.
+GRAPH_INPUT_DEFAULTS: Mapping[str, tuple[float, ...]] = {
+    "total_charge": (0.0,),
+    "total_spin": (1.0,),
+    "external_field": (0.0, 0.0, 0.0),
 }
 
 
