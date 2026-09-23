@@ -25,7 +25,10 @@ So there are three regimes, and each is a decision:
 The inflated box is sized from the atoms' **extent** plus the cutoff, not from
 the largest absolute coordinate. Sizing it from the coordinates makes it depend
 on where the origin happens to be and produces boxes large enough to run an
-electrostatic model out of GPU memory, for identical neighbour lists.
+electrostatic model out of GPU memory, for identical neighbour lists. It is
+built along directions orthogonal to the periodic lattice vectors, and the
+atoms are moved into it for the search, so the edges do not depend on where the
+structure sits either.
 """
 
 from __future__ import annotations
@@ -57,17 +60,58 @@ class NeighborList(tuple):
     cell = property(lambda self: self[3])
 
 
-def _search_box(
-    positions: np.ndarray, cell: np.ndarray, pbc: tuple[bool, bool, bool], cutoff: float
-) -> np.ndarray:
-    """The box to bin in: the physical cell, inflated along non-periodic axes."""
-    box = np.array(cell, dtype=float, copy=True)
+#: A direction counts as free only if what is left of it after removing the
+#: periodic span is a real direction rather than round-off.
+_DEGENERATE = 1e-8
+
+
+def _orthogonal_residual(vector: np.ndarray, basis: list[np.ndarray]) -> np.ndarray:
+    residual = np.array(vector, dtype=float)
+    for axis in basis:
+        residual = residual - (residual @ axis) * axis
+    return residual
+
+
+def _aperiodic_search_directions(
+    pbc: tuple[bool, bool, bool], cell: np.ndarray
+) -> dict[int, np.ndarray]:
+    """One unit vector per non-periodic axis, to build the search box along.
+
+    Each is orthogonal to every periodic lattice vector, so no periodic image
+    can carry an atom along it. A box the atoms can be moved out of gets them
+    wrapped by matscipy, which reports the wrap as a shift the caller's
+    positions know nothing about, and along a Cartesian axis any lattice vector
+    with a component there does exactly that. Where the Cartesian axis is
+    already free, which covers every cell built the usual way, it is the one
+    returned.
+    """
+    aperiodic = [axis for axis in range(3) if not pbc[axis]]
     identity = np.identity(3, dtype=float)
+    if not any(pbc):
+        return {axis: identity[axis] for axis in aperiodic}
+    # An orthonormal basis of the directions a periodic image moves an atom
+    # along. Each non-periodic direction is chosen outside its span and then
+    # added to it, so two of them cannot come out parallel.
+    spanned: list[np.ndarray] = []
     for axis in range(3):
         if not pbc[axis]:
-            extent = float(positions[:, axis].max() - positions[:, axis].min())
-            box[axis, :] = (extent + 2.0 * cutoff + 1.0) * identity[axis, :]
-    return box
+            continue
+        residual = _orthogonal_residual(cell[axis], spanned)
+        scale = max(float(np.linalg.norm(cell[axis])), 1.0)
+        if np.linalg.norm(residual) > _DEGENERATE * scale:
+            spanned.append(residual / np.linalg.norm(residual))
+    directions: dict[int, np.ndarray] = {}
+    for axis in aperiodic:
+        # The axis this row stands for first, then the other two, for a cell
+        # whose periodic vectors happen to span it.
+        for candidate in (identity[axis], identity[0], identity[1], identity[2]):
+            residual = _orthogonal_residual(candidate, spanned)
+            norm = float(np.linalg.norm(residual))
+            if norm > _DEGENERATE:
+                directions[axis] = residual / norm
+                spanned.append(directions[axis])
+                break
+    return directions
 
 
 def get_neighborhood(
@@ -115,7 +159,21 @@ def get_neighborhood(
     else:
         lattice = np.asarray(cell, dtype=float).reshape(3, 3)
 
-    search_box = _search_box(positions, lattice, flags, cutoff)
+    # The box is sized from the atoms' extent along each non-periodic
+    # direction, and the atoms are moved into it: the offset handles a
+    # structure that starts outside the box, the direction stops a periodic
+    # image from carrying one back out, and together they make the edges
+    # independent of where the structure sits. A cutoff of clearance rather
+    # than flush against the wall, where matscipy pays for the boundary bins.
+    # The offset is rigid, so no distance changes, and the caller's positions
+    # are not touched.
+    search_box = np.array(lattice, dtype=float, copy=True)
+    search_positions = np.array(positions, dtype=float, copy=True)
+    for axis, direction in _aperiodic_search_directions(flags, lattice).items():
+        projection = search_positions @ direction
+        extent = float(projection.max() - projection.min())
+        search_box[axis, :] = (extent + 2.0 * cutoff + 1.0) * direction
+        search_positions -= (float(projection.min()) - cutoff) * direction
 
     if any(flags):
         returned = np.array(lattice, dtype=float, copy=True)
@@ -131,7 +189,7 @@ def get_neighborhood(
         quantities="ijS",
         pbc=flags,
         cell=search_box,
-        positions=positions,
+        positions=search_positions,
         cutoff=cutoff,
     )
 

@@ -21,6 +21,23 @@ written reduced.
 Neither direction is bit-exact in weight space, and it cannot be: the map is a
 projection. What it preserves is the function, so it is tested on values and
 never on weight equality.
+
+**Which full basis matters.** A trained model's weights are written against the
+basis that model was built with. Two full bases of the same space can differ by
+an order and a rotation inside it, and the frozen tree's does: it spans exactly
+this package's space and is not this package's basis. So weights from an
+artifact are converted against the artifact's own basis, passed as ``source``,
+and a projection derived from this package's full basis alone would compute
+something else.
+
+**Why symmetrized.** The contraction feeds the same vector to every input slot,
+so only the part of a path that is symmetric under permuting the slots computes
+anything. Fitting the unsymmetrized tensor treats the slots as independent,
+finds the full rank (23 for a scalar at body order three where the reduced
+basis has 8) and leaves a residual of order one, which looks like a broken
+projection rather than a wrong formulation. The residual of the symmetrized fit
+is measured on every call and refused above a tolerance, since a reduced basis
+short of a direction still produces weights of the right shape.
 """
 
 from __future__ import annotations
@@ -38,6 +55,8 @@ from mace_core.clebsch_gordan.reduced_basis import (
 )
 
 __all__ = [
+    "PROJECTION_TOLERANCE",
+    "BasisConversionError",
     "from_canonical",
     "full_to_reduced",
     "ir_mul_to_mul_ir",
@@ -47,17 +66,56 @@ __all__ = [
 ]
 
 
-def _projection(irreps_in: str | Irreps, correlation: int, target: str) -> np.ndarray:
+#: The largest relative residual of a projection that still counts as exact.
+#: The fit is an identity between two spans, so what it leaves is rounding, and
+#: at float64 that is measured around 1e-15.
+PROJECTION_TOLERANCE = 1e-14
+
+
+class BasisConversionError(ValueError):
+    """A conversion between bases that would not preserve the function."""
+
+
+def _projection(
+    irreps_in: str | Irreps,
+    correlation: int,
+    target: str,
+    source: np.ndarray | None = None,
+    tolerance: float = PROJECTION_TOLERANCE,
+) -> np.ndarray:
     """The matrix carrying full-basis weights onto reduced-basis ones.
+
+    Args:
+        source: The full basis the weights are written against, path axis
+            first: ``[paths, target dimension, d, ..., d]`` with
+            ``correlation`` input axes. ``None`` is this package's own.
 
     Returns shape ``(n_full, n_reduced)``. Its transpose is the weight map: a
     full path contributes to a reduced one in proportion to how much of it
     survives symmetrization.
+
+    Raises:
+        BasisConversionError: If the source has the wrong shape, or the reduced
+            basis does not reproduce its symmetric part, which is a basis short
+            of a direction or two bases of different spaces.
     """
-    full = full_symmetric_tensor_product_basis(irreps_in, correlation, target)[target]
     reduced = reduced_symmetric_tensor_product_basis(irreps_in, correlation, target)[
         target
     ]
+    if source is None:
+        full = full_symmetric_tensor_product_basis(irreps_in, correlation, target)[
+            target
+        ]
+    else:
+        full = np.asarray(source, dtype=np.float64)
+        expected = reduced.shape[1:]
+        if full.shape[1:] != expected:
+            raise BasisConversionError(
+                f"the source basis for {target!r} at correlation {correlation} "
+                f"has shape {full.shape}, and a path over {irreps_in!r} has "
+                f"shape {expected}: [target dimension, then one axis per input "
+                f"slot]. Pass it with the path axis first."
+            )
     if full.shape[0] == 0 or reduced.shape[0] == 0:
         return np.zeros((full.shape[0], reduced.shape[0]), dtype=np.float64)
     # symmetrize sums over the permutations rather than averaging, so it
@@ -73,6 +131,17 @@ def _projection(irreps_in: str | Irreps, correlation: int, target: str) -> np.nd
     )
     flat_reduced = reduced.reshape(reduced.shape[0], -1)
     solution, *_ = np.linalg.lstsq(flat_reduced.T, symmetrized.T, rcond=None)
+    scale = float(np.abs(symmetrized).max())
+    residual = float(np.abs(flat_reduced.T @ solution - symmetrized.T).max())
+    if scale > 0.0 and residual / scale > tolerance:
+        raise BasisConversionError(
+            f"the reduced basis for {target!r} at correlation {correlation} over "
+            f"{irreps_in!r} does not reproduce the source basis: the relative "
+            f"residual is {residual / scale:.3e} against {tolerance:.1e}. The "
+            f"source has {full.shape[0]} paths and the reduced basis "
+            f"{reduced.shape[0]}; converting would change what the model "
+            f"computes."
+        )
     return np.ascontiguousarray(solution.T)
 
 
@@ -82,6 +151,7 @@ def full_to_reduced(
     correlation: int,
     target: str,
     axis: int = -2,
+    source: np.ndarray | None = None,
 ) -> np.ndarray:
     """Carry full-basis weights onto the reduced basis. Exact and unique.
 
@@ -92,19 +162,23 @@ def full_to_reduced(
         correlation: The body order.
         target: The output irrep these weights belong to.
         axis: Which axis indexes the paths.
+        source: The full basis the weights were trained against, path axis
+            first. Required for weights from an artifact; see the module
+            docstring for why this package's own basis is not a substitute.
 
     Returns:
         The same array with the path axis replaced by the reduced one.
 
     Raises:
-        ValueError: If the path axis does not have the length the full basis
-            has. The message gives both numbers, since the usual cause is
-            weights built for a different correlation.
+        BasisConversionError: If the path axis does not have the length the
+            full basis has, or the projection is not exact. The message gives
+            both numbers, since the usual cause is weights built for a
+            different correlation.
     """
-    matrix = _projection(irreps_in, correlation, target)
+    matrix = _projection(irreps_in, correlation, target, source)
     moved = np.moveaxis(weights, axis, -1)
     if moved.shape[-1] != matrix.shape[0]:
-        raise ValueError(
+        raise BasisConversionError(
             f"the path axis has length {moved.shape[-1]}, but the full basis "
             f"for {target!r} at correlation {correlation} has "
             f"{matrix.shape[0]} paths."
