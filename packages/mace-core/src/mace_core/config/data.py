@@ -112,7 +112,9 @@ class DataConfig(FrozenSection):
             part of the meaning: shifting energies and then masking on a
             threshold is not the same run as masking and then shifting.
         skip_evaluate_heads: Heads left out of the evaluation tables, for a
-            replay head whose errors are not the run's subject.
+            replay head whose errors are not the run's subject. Matched against
+            the head and not against the row's name, so a head whose name is
+            part of another's does not take it with it.
     """
 
     heads: dict[str, HeadDataConfig] = Field(default_factory=dict)

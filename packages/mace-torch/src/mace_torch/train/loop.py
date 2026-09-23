@@ -368,7 +368,7 @@ def report_errors(
     table = error_table(
         config.runtime.error_table,
         rows,
-        skip_heads=config.runtime.skip_evaluate_heads,
+        skip_heads=config.data.skip_evaluate_heads,
     )
     logger.info("Errors on the training and validation sets:\n%s", table)
     tracker.summary(
@@ -399,7 +399,7 @@ def report_errors(
             error_table(
                 config.runtime.error_table,
                 test_rows,
-                skip_heads=config.runtime.skip_evaluate_heads,
+                skip_heads=config.data.skip_evaluate_heads,
             ),
         )
     return table
