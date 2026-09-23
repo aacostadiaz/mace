@@ -96,6 +96,77 @@ def test_a_self_edge_across_a_boundary_is_a_real_neighbour():
     assert result.edge_index.shape[1] == 6
 
 
+def edge_set(neighbourhood) -> set[tuple[int, ...]]:
+    """The edges as a set, each with its lattice shift, so order is irrelevant."""
+    index, _, unit_shifts, _ = neighbourhood
+    return {
+        (int(i), int(j), *(round(float(n)) for n in shift))
+        for i, j, shift in zip(index[0], index[1], unit_shifts, strict=True)
+    }
+
+
+@pytest.mark.parametrize("offset", [0.0, 100.0, -250.0])
+def test_a_molecules_edges_do_not_depend_on_where_it_sits(offset):
+    """Anchored at the origin, the search box leaves a displaced molecule
+    outside it, matscipy wraps its atoms, and the wrap comes back as a shift
+    that turns a bond into an edge a box long, at an unchanged edge count."""
+    positions = np.random.default_rng(7).uniform(-4.0, 4.0, size=(12, 3))
+    here = get_neighborhood(positions, cutoff=5.0)
+    moved = get_neighborhood(positions + offset, cutoff=5.0)
+    assert edge_set(moved) == edge_set(here)
+    index, shifts, unit_shifts, _ = moved
+    assert not unit_shifts.any()
+    translated = positions + offset
+    lengths = np.linalg.norm(
+        translated[index[1]] - translated[index[0]] + shifts, axis=-1
+    )
+    assert np.all(lengths < 5.0)
+
+
+@pytest.mark.parametrize("offset", [0.0, 75.0])
+def test_a_slab_s_edges_do_not_depend_on_where_it_sits_along_its_vacuum(offset):
+    """Only the non-periodic direction is offset: the periodic axes keep their
+    coordinates and their real wrap-around shifts."""
+    cell = np.diag([6.0, 6.0, 30.0])
+    generator = np.random.default_rng(5)
+    positions = generator.uniform(0.0, 6.0, size=(8, 3))
+    positions[:, 2] = generator.uniform(-0.5, 0.5, size=8)
+    here = get_neighborhood(positions, 3.5, (True, True, False), cell)
+    shifted = positions.copy()
+    shifted[:, 2] += offset
+    moved = get_neighborhood(shifted, 3.5, (True, True, False), cell)
+    assert edge_set(moved) == edge_set(here)
+
+
+#: A slab whose periodic vectors reach out of the plane they span, so its
+#: vacuum direction is not a Cartesian axis.
+TILTED_SLAB = np.array([[3.1, 0.2, 0.1], [0.9, 2.8, -0.2], [0.0, 0.0, 0.0]])
+
+
+@pytest.mark.parametrize("axis", [0, 1, 2])
+@pytest.mark.parametrize("offset", [0.0, 300.0])
+def test_a_tilted_slab_s_edges_do_not_depend_on_where_it_sits(axis, offset):
+    """Moving the atoms into the box is half of it. Built along a Cartesian
+    axis a lattice vector reaches into, the box lets a periodic image carry
+    them straight back out, so a displacement along a periodic direction still
+    corrupted the edges."""
+    positions = np.random.default_rng(3).uniform(0.0, 3.0, size=(6, 3))
+    here = get_neighborhood(positions, 2.5, (True, True, False), TILTED_SLAB)
+    shifted = positions.copy()
+    shifted[:, axis] += offset
+    moved = get_neighborhood(shifted, 2.5, (True, True, False), TILTED_SLAB)
+    assert edge_set(moved) == edge_set(here)
+
+
+def test_a_tilted_slab_s_box_is_built_orthogonal_to_its_lattice():
+    positions = np.random.default_rng(3).uniform(0.0, 3.0, size=(6, 3))
+    cell = get_neighborhood(positions, 2.5, (True, True, False), TILTED_SLAB)[3]
+    vacuum = cell[2] / np.linalg.norm(cell[2])
+    assert abs(vacuum @ TILTED_SLAB[0]) < 1e-12
+    assert abs(vacuum @ TILTED_SLAB[1]) < 1e-12
+    np.testing.assert_array_equal(cell[:2], TILTED_SLAB[:2])
+
+
 def test_the_callers_cell_is_never_written_to():
     cell = np.diag([4.0, 4.0, 20.0])
     before = cell.copy()
