@@ -576,23 +576,32 @@ class ReferenceRadialBasis(nn.Module):
                 f"{descriptor.kind!r} is not a radial basis this backend "
                 f"builds. The kinds are {sorted(_BASES)}."
             )
-        # ARCH-1's Chebyshev takes no r_max, and rightly: the frozen tree
-        # stored one and never used it, so the polynomials run past the unit
-        # interval into the divergent branch. Passing it would be inventing a
-        # parameter the basis does not have.
-        if descriptor.kind == "chebyshev":
-            self.basis: nn.Module = ChebyshevBasis(num_basis=descriptor.num_basis)
-        elif descriptor.kind == "gaussian":
-            self.basis = GaussianBasis(
-                r_max=descriptor.cutoff, num_basis=descriptor.num_basis
+        # The bases make their constants in the process default at
+        # construction, so they are built with the descriptor's precision as
+        # the default. Left to the process, a float64 model built in a fresh
+        # interpreter holds float32 frequencies and cutoffs.
+        previous = torch.get_default_dtype()
+        torch.set_default_dtype(_TORCH_DTYPE[descriptor.precision])
+        try:
+            # ARCH-1's Chebyshev takes no r_max, and rightly: the frozen tree
+            # stored one and never used it, so the polynomials run past the unit
+            # interval into the divergent branch. Passing it would be inventing a
+            # parameter the basis does not have.
+            if descriptor.kind == "chebyshev":
+                self.basis: nn.Module = ChebyshevBasis(num_basis=descriptor.num_basis)
+            elif descriptor.kind == "gaussian":
+                self.basis = GaussianBasis(
+                    r_max=descriptor.cutoff, num_basis=descriptor.num_basis
+                )
+            else:
+                self.basis = BesselBasis(
+                    r_max=descriptor.cutoff, num_basis=descriptor.num_basis
+                )
+            self.cutoff = PolynomialCutoff(
+                r_max=descriptor.cutoff, polynomial_order=descriptor.cutoff_order
             )
-        else:
-            self.basis = BesselBasis(
-                r_max=descriptor.cutoff, num_basis=descriptor.num_basis
-            )
-        self.cutoff = PolynomialCutoff(
-            r_max=descriptor.cutoff, polynomial_order=descriptor.cutoff_order
-        )
+        finally:
+            torch.set_default_dtype(previous)
 
     def forward(self, lengths: Tensor) -> Tensor:
         return self.basis(lengths) * self.cutoff(lengths)
