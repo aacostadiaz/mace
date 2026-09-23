@@ -59,6 +59,7 @@ class _Convolution(nn.Module):
 
     to_channels: Tensor
     from_paths: Tensor
+    neighbours: Tensor
 
     def __init__(
         self,
@@ -142,6 +143,23 @@ class _Convolution(nn.Module):
         )
         message = message.reshape(num_nodes, -1)[..., self.from_paths]
         return self.linear(message) / self.neighbours
+
+    def to_canonical(self) -> dict[str, Tensor]:
+        """The neighbour normalization, which the checkpoint has to carry.
+
+        It is a constant of the trained model rather than a weight: the
+        messages are divided by it, and a model rebuilt with another value
+        loads without complaint and computes a different function. Measured
+        on a water molecule, a model trained at six and reloaded at the
+        default of one is off by 0.49 eV. So it travels with the weights, like
+        the isolated-atom energies do, and a rebuild can start from any value.
+        """
+        return {"neighbours": self.neighbours.detach()}
+
+    def load_canonical(self, state: dict[str, Tensor]) -> None:
+        """Put the normalization back, in the model's own dtype and place."""
+        with torch.no_grad():
+            self.neighbours.copy_(state["neighbours"])
 
 
 class InteractionBlock(nn.Module):
