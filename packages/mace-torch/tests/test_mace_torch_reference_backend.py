@@ -447,3 +447,43 @@ def test_a_mixed_contraction_round_trips_through_a_fresh_instance(backend):
     features = torch.randn(6, 4, Irreps.parse("0e+1o").dimension)
     elements = torch.randint(0, 2, (6,))
     assert torch.equal(written(features, elements), restored(features, elements))
+
+
+def radial_built_under(default, kind):
+    from mace_core.kernels.descriptors import RadialBasisDescriptor
+    from mace_torch.backends.reference import ReferenceBackend
+
+    previous = torch.get_default_dtype()
+    torch.set_default_dtype(default)
+    try:
+        return ReferenceBackend().make_radial_basis(
+            RadialBasisDescriptor(
+                kind=kind, num_basis=8, cutoff=3.5, precision="float64"
+            )
+        )
+    finally:
+        torch.set_default_dtype(previous)
+
+
+@pytest.mark.parametrize("kind", ["bessel", "gaussian", "chebyshev"])
+def test_a_radial_basis_holds_its_precision_whatever_the_default(kind):
+    """Its constants are made at construction. Built in a process whose
+    default is float32, a float64 basis used to hold float32 frequencies and
+    cutoffs, rounded, so the same model computed other numbers there."""
+    narrow = dict(radial_built_under(torch.float32, kind).named_buffers())
+    wide = dict(radial_built_under(torch.float64, kind).named_buffers())
+    assert narrow.keys() == wide.keys()
+    for name, value in narrow.items():
+        if value.is_floating_point():
+            assert value.dtype == torch.float64, name
+            assert torch.equal(value, wide[name]), name
+
+
+def test_building_a_radial_basis_leaves_the_default_alone():
+    previous = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float32)
+    try:
+        radial_built_under(torch.float32, "bessel")
+        assert torch.get_default_dtype() == torch.float32
+    finally:
+        torch.set_default_dtype(previous)
