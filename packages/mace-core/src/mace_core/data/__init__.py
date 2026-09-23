@@ -31,8 +31,8 @@ from mace_core.data.e0_resolution import (
     resolve_e0s,
 )
 from mace_core.data.keys import (
-    ARRAYS_CONVENTION_NAMES,
-    INFO_CONVENTION_NAMES,
+    ATOM_CONVENTION_NAMES,
+    GRAPH_CONVENTION_NAMES,
     EmbeddingFeatureSpec,
     KeySpecification,
 )
@@ -62,11 +62,11 @@ from mace_core.elements import (
 )
 
 __all__ = [
-    "ARRAYS_CONVENTION_NAMES",
+    "ATOM_CONVENTION_NAMES",
     "DEFAULT_CONFIG_TYPE",
     "DEFAULT_HEAD",
     "ENTRY_POINT_GROUP",
-    "INFO_CONVENTION_NAMES",
+    "GRAPH_CONVENTION_NAMES",
     "ISOLATED_ATOM_CONFIG_TYPE",
     "AmbiguousFormatError",
     "AtomicNumberTable",
