@@ -45,6 +45,9 @@ dependencies = [
     # make the dependency optional, and a distribution that did not declare it
     # installs clean and then raises the first time a graph is built.
     "matscipy>=0.8",
+    # The neutral weights format. Read and written through its numpy module,
+    # which needs no framework.
+    "safetensors>=0.4",
 ]
 
 [project.entry-points."mace.data_backends"]
