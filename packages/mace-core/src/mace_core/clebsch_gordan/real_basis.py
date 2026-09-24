@@ -45,6 +45,7 @@ __all__ = [
     "AXIS_PERMUTATION",
     "induced_rotation",
     "real_basis_change",
+    "symmetric_matrix_basis",
     "textbook_harmonics",
     "wigner_3j_real",
     "wigner_d_real",
@@ -235,3 +236,30 @@ def wigner_d_real(degree: int, rotation: np.ndarray) -> np.ndarray:
             f"rotation. Its determinant is {np.linalg.det(rotation):.6f}."
         )
     return np.ascontiguousarray(wigner)
+
+
+@cache
+def symmetric_matrix_basis() -> np.ndarray:
+    """A symmetric 3x3 matrix as ``0e+2e``, and back.
+
+    Row ``m`` is the matrix component ``m`` of the six spherical components
+    stands for, so a spherical row ``t`` is the matrix
+    ``einsum("mij,m->ij", basis, t)``, and since the rows are orthonormal the
+    same table read the other way takes a symmetric matrix to its six
+    components. The first row is the trace part, ``I / sqrt(3)``.
+
+    These are the 3j tables coupling two vectors to degrees 0 and 2, scaled to
+    unit norm per row: the matrix ``v w^T`` of two vectors is exactly that
+    coupling. The components are therefore in the project's basis, the one the
+    harmonics and every readout use, which is also the frozen tree's.
+
+    Returns:
+        ``(6, 3, 3)``, read only.
+    """
+    rows = [
+        np.moveaxis(wigner_3j_real(1, 1, degree), -1, 0) * math.sqrt(2 * degree + 1)
+        for degree in (0, 2)
+    ]
+    basis = np.concatenate(rows, axis=0)
+    basis.setflags(write=False)
+    return basis
