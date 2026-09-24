@@ -189,7 +189,8 @@ reference in `mace_torch/backends/reference/backend.py` is the one to copy.
 | `mace_core/clebsch_gordan/real_basis.py` | The Wigner 3j table in the real spherical-harmonic basis the models use. |
 | `mace_core/clebsch_gordan/reduced_basis.py` | The reduced symmetric tensor-product basis and its path order. |
 | `mace_core/config/__init__.py` | The configuration schemas, re-exported. |
-| `mace_core/config/base.py` | The base schema: file loading, dotted CLI overrides, unknown keys as errors. |
+| `mace_core/config/base.py` | The base schema: one file, one validation, unknown keys as errors. |
+| `mace_core/config/cli.py` | The `--a.b value` override grammar, parsed and written into a parsed file. |
 | `mace_core/config/data.py` | Datasets, heads, splits, transforms and the graph-input file keys. |
 | `mace_core/config/e0s.py` | The ways a head's isolated-atom energies can be given or estimated. |
 | `mace_core/config/electrostatics.py` | Which long-range solver a model uses, and for which systems. |

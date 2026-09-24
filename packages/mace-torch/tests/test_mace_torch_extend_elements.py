@@ -89,7 +89,7 @@ def water_foundation(directory):
                     "heads": {
                         "pbe": {
                             "train_file": str(directory / "train.xyz"),
-                            "e0s": {"isolated_atoms": {}},
+                            "e0s": {"kind": "isolated_atoms"},
                         }
                     },
                     "valid_fraction": 0.2,
@@ -297,7 +297,7 @@ def test_a_fine_tune_on_the_new_element_starts_from_the_extension(foundation, tm
                 "heads": {
                     "pbe": {
                         "train_file": str(tmp_path / "methanol.xyz"),
-                        "e0s": {"foundation": {}},
+                        "e0s": {"kind": "foundation"},
                     }
                 },
                 "valid_fraction": 0.34,

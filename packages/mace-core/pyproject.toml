@@ -38,7 +38,9 @@ dependencies = [
     # releases.
     "pydantic>=2.7",
     "pyyaml>=6.0",
-    "tomli>=2.0",
+    "tomli>=2.0; python_version < '3.11'",
+    # `typing.Self` is 3.11+; the floor is 3.10.
+    "typing-extensions>=4.4",
     # The neighbour list. Imported inside `get_neighborhood` rather than at the
     # top, because it is the one heavy import here and a caller that only wants
     # a `Configuration` should not pay for it; deferring an import does not

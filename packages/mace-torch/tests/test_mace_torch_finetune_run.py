@@ -56,7 +56,7 @@ def foundation_path(tmp_path_factory):
                 "heads": {
                     "pbe": {
                         "train_file": str(dataset(directory / "train.xyz")),
-                        "e0s": {"isolated_atoms": {}},
+                        "e0s": {"kind": "isolated_atoms"},
                     }
                 },
                 "valid_fraction": 0.2,
@@ -109,7 +109,7 @@ def fine_tune_config(directory, foundation, **model):
                 "heads": {
                     "replay": {
                         "train_file": str(directory / "train.xyz"),
-                        "e0s": {"foundation": {}},
+                        "e0s": {"kind": "foundation"},
                         "weight": 0.5,
                     },
                     # Its own references for the elements it has, and one for
@@ -121,7 +121,8 @@ def fine_tune_config(directory, foundation, **model):
                             new_level_of_theory(directory / "target.xyz")
                         ),
                         "e0s": {
-                            "table": {"values": {1: -13.1, 6: -1030.0, 8: -2039.2}}
+                            "kind": "table",
+                            "values": {1: -13.1, 6: -1030.0, 8: -2039.2},
                         },
                     },
                 },

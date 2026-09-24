@@ -218,7 +218,7 @@ def resolved_config(artifact: NeutralArtifact) -> ResolvedConfig:
     # are an answer already, and a checkpoint read back takes its heads and
     # their energies from here.
     heads = {
-        head: {"e0s": {"table": {"values": values}}}
+        head: {"e0s": {"kind": "table", "values": values}}
         for head, values in isolated_atom_energies(artifact).items()
     }
     return ResolvedConfig.model_validate({"model": model, "data": {"heads": heads}})
