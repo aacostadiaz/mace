@@ -28,6 +28,7 @@ __all__ = [
     "DataSummary",
     "E0Details",
     "ElectrostaticsRecord",
+    "ElementExtensionRecord",
     "HeadSummary",
     "MetadataSchemaError",
     "ModelMetadata",
@@ -38,7 +39,7 @@ __all__ = [
 
 #: The schema version this module writes and the only one it reads. Bump it
 #: together with the `Literal` on `ModelMetadata.schema_version`.
-SCHEMA_VERSION: Final = 2
+SCHEMA_VERSION: Final = 3
 
 
 class MetadataSchemaError(ValueError):
@@ -149,6 +150,24 @@ class ElectrostaticsRecord(_Record):
     descriptor: dict[str, Any] = Field(default_factory=dict)
 
 
+class ElementExtensionRecord(_Record):
+    """The elements a model was given beyond its parent's, and how.
+
+    The rows those elements have in every per-element tensor were never
+    trained, so what they hold is the initialization that made them, and that
+    is recorded rather than left to be guessed from the weights.
+    """
+
+    #: The added elements, as chemical symbols.
+    added: list[str]
+    #: The initialization spec the new rows were made with, by name.
+    initialization: str
+    #: The seed it drew them with, for an initialization that draws.
+    seed: int | None = None
+    #: For an initialization that copies, the element each added one copied.
+    donors: dict[str, str] = Field(default_factory=dict)
+
+
 class Citation(_Record):
     """One work users of the model are asked to cite."""
 
@@ -164,7 +183,7 @@ class ModelMetadata(_Record):
     """The mandatory per-model record. See the module docstring."""
 
     #: Pinned to the version this code reads; a bump here is a schema change.
-    schema_version: Literal[2] = SCHEMA_VERSION
+    schema_version: Literal[3] = SCHEMA_VERSION
     config: ConfigRecord
     provenance: Provenance
     data: DataSummary = Field(default_factory=DataSummary)
@@ -179,6 +198,8 @@ class ModelMetadata(_Record):
     parents: list[ParentModel] = Field(default_factory=list)
     #: The long-range solver, for a model that carries a long-range term.
     electrostatics: ElectrostaticsRecord | None = None
+    #: The elements added to its parent's, for a model made that way.
+    element_extension: ElementExtensionRecord | None = None
 
     @model_validator(mode="after")
     def _heads_name_known_sources(self) -> ModelMetadata:
