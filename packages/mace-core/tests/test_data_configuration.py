@@ -373,37 +373,32 @@ def test_all_thirteen_default_keys_survive_a_write_and_a_read(tmp_path):
     assert config.head == "Default"
     assert properties["head"] == "Default"
 
-    # every declared property has a weight, and twelve of the thirteen read
+    # every declared property has a weight, and all thirteen read
     assert set(config.property_weights) == set(properties)
     assert {n for n, w in config.property_weights.items() if w == 1.0} == {
         name.lower() for name in DEFAULT_KEY_TABLE
-    } - {"dipole"}
+    }
 
 
-def test_the_default_dipole_key_cannot_be_read_back_from_a_file(tmp_path):
-    """The one default key that does not survive a round trip.
-
-    ase reserves ``dipole`` as a per-structure calculator property, so a value
-    written into ``info`` is read back into ``calc.results`` and never reaches
-    the place the parser looks. The property becomes None at weight zero, which
-    is why every dipole workflow names a different key. Pinned as behaviour the
-    rewrite inherited, not endorsed: this test is what would notice a fix.
-    """
+def test_the_default_dipole_key_is_read_back_from_the_calculator(tmp_path):
+    """ase reserves ``dipole`` as a per-structure calculator property, so a value
+    written into ``info`` is read back into ``calc.results``. The default key is
+    that name, so the reader takes it from there."""
     atoms = water(REF_energy=0.0)
     atoms.new_array("REF_forces", np.zeros((3, 3)))
     atoms.info["dipole"] = np.array([0.1, -0.2, 0.3])
-    atoms.info["REF_dipole"] = np.array([0.1, -0.2, 0.3])
+    atoms.info["REF_dipole"] = np.array([0.4, 0.5, 0.6])
     path = write(tmp_path, [atoms])
 
     parsed = read_configurations(path, KeySpecification.from_defaults())
-    assert parsed.configurations[0].properties["dipole"] is None
-    assert parsed.configurations[0].property_weights["dipole"] == 0.0
+    assert np.allclose(parsed.configurations[0].properties["dipole"], [0.1, -0.2, 0.3])
+    assert parsed.configurations[0].property_weights["dipole"] == 1.0
 
     renamed = read_configurations(
         path,
         KeySpecification.from_defaults().apply_overrides({"dipole_key": "REF_dipole"}),
     )
-    assert np.allclose(renamed.configurations[0].properties["dipole"], [0.1, -0.2, 0.3])
+    assert np.allclose(renamed.configurations[0].properties["dipole"], [0.4, 0.5, 0.6])
 
 
 @pytest.mark.parametrize(
@@ -876,9 +871,15 @@ def test_a_reserved_key_is_rewritten_onto_its_default_spelling():
     """The rewrite has to land where the parser then looks.
 
     Spelled once, on the key table. A second copy here would keep saying
-    `REF_energy` while the table moved.
+    `REF_energy` while the table moved. The dipole is the exception: its
+    default spelling is the reserved one, so it is what gets rewritten.
     """
     from mace_core.data.xyz import _RESERVED_KEYS
 
     for name, reserved in _RESERVED_KEYS.items():
-        assert reserved.rewritten == DefaultKeys[name.upper()].value
+        default = DefaultKeys[name.upper()].value
+        if reserved.convention:
+            assert reserved.reserved == default
+            assert reserved.rewritten != default
+        else:
+            assert reserved.rewritten == default
