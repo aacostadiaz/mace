@@ -18,7 +18,7 @@ from ase import Atoms
 from ase.io import write
 from conftest import fp64_only
 from mace_core.config.resolved import ResolvedConfig
-from mace_core.observables import load_default_catalogue
+from mace_core.observables import DEFAULT_CATALOGUE
 from mace_torch.finetune.foundation import read_foundation
 from mace_torch.train import (
     ModelStageError,
@@ -32,7 +32,7 @@ from mace_torch.train import (
 from mace_torch.train.loss import build_loss
 from test_mace_torch_foundation_transfer import dataset
 
-CATALOGUE = load_default_catalogue()
+CATALOGUE = DEFAULT_CATALOGUE
 WATER = np.array([[0.0, 0.0, 0.0], [0.96, 0.0, 0.0], [-0.24, 0.93, 0.0]])
 
 ARCHITECTURE = {

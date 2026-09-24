@@ -20,7 +20,7 @@ from conftest import fp64_only
 from mace_core.config.resolved import ResolvedConfig
 from mace_core.data.backend import DatasetStatistics
 from mace_core.elements import AtomicNumberTable, ResolvedE0s
-from mace_core.observables import load_default_catalogue
+from mace_core.observables import DEFAULT_CATALOGUE
 from mace_torch.data import GraphDataset, collate_training
 from mace_torch.finetune.foundation import FoundationError, read_foundation
 from mace_torch.finetune.transfer import (
@@ -36,7 +36,7 @@ from mace_torch.train import (
 )
 from mace_torch.train.model_stage import build_model
 
-CATALOGUE = load_default_catalogue()
+CATALOGUE = DEFAULT_CATALOGUE
 HYDROGEN, CARBON, OXYGEN = -13.6, -1030.0, -2040.0
 WATER = np.array([[0.0, 0.0, 0.0], [0.96, 0.0, 0.0], [-0.24, 0.93, 0.0]])
 METHANE = np.array(

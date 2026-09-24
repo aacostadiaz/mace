@@ -18,7 +18,7 @@ from ase import Atoms
 from ase.io import write
 from conftest import fp64_only
 from mace_core.config.resolved import ResolvedConfig
-from mace_core.observables import load_default_catalogue
+from mace_core.observables import DEFAULT_CATALOGUE
 from mace_torch.serialization import CheckpointError
 from mace_torch.train import run_data_stage, run_model_stage, run_train_stage
 from mace_torch.train.checkpoint import (
@@ -32,7 +32,7 @@ from mace_torch.train.full_batch import accumulate, full_batch_step, set_totals
 from mace_torch.train.loss import TermwiseLoss, build_loss
 from mace_torch.train.optimizers import build_optimizer
 
-CATALOGUE = load_default_catalogue()
+CATALOGUE = DEFAULT_CATALOGUE
 
 HYDROGEN, OXYGEN = -13.6, -2040.0
 

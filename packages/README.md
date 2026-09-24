@@ -131,7 +131,6 @@ packages/
     config/                      the pydantic configuration, section by section
     data/                        structures, backends, E0s, statistics, splits
       backends/                  in-memory and XYZ data backends
-    defaults/                    the default observable catalogue, as YAML
     electrostatics/              long-range solve descriptors, solver registry
     elements/                    element tables, default file keys, E0 values
     kernels/                     op descriptors, backend protocol and registry
@@ -217,7 +216,6 @@ reference in `mace_torch/backends/reference/backend.py` is the one to copy.
 | `mace_core/data/splitting.py` | Train and validation splits, and grouping for reports. |
 | `mace_core/data/statistics.py` | Average neighbours, energy shift and scale, over any backend. |
 | `mace_core/data/xyz.py` | Reading labelled structure files into configurations. |
-| `mace_core/defaults/observables.yaml` | The default observable catalogue: energy with forces and stress. |
 | `mace_core/electrostatics/__init__.py` | The electrostatics contract, re-exported. |
 | `mace_core/electrostatics/capabilities.py` | What a solver declares it can do, and the refusal when it cannot. |
 | `mace_core/electrostatics/descriptor.py` | One long-range solve as data: profile, multipoles, projection, method. |
@@ -238,7 +236,7 @@ reference in `mace_torch/backends/reference/backend.py` is the one to copy.
 | `mace_core/metadata.py` | `ModelMetadata`: the versioned record every checkpoint carries. |
 | `mace_core/neighbors.py` | The neighbour list as a pure function, with the cell regimes stated. |
 | `mace_core/observables/__init__.py` | Declared observables, re-exported. |
-| `mace_core/observables/defaults.py` | Loading an observable catalogue from its YAML file. |
+| `mace_core/observables/defaults.py` | The default observable catalogue: energy with forces and stress. |
 | `mace_core/observables/derivatives.py` | How a derivative of a declared quantity is named. |
 | `mace_core/observables/grammar.py` | The irreps string grammar. |
 | `mace_core/observables/request.py` | Turning configured names into observables and derivatives. |

@@ -18,7 +18,7 @@ from ase import Atoms
 from ase.io import write
 from conftest import fp64_only
 from mace_core.config.resolved import ResolvedConfig
-from mace_core.observables import load_default_catalogue
+from mace_core.observables import DEFAULT_CATALOGUE
 from mace_torch.data import GraphDataset
 from mace_torch.models import MACEOutputs, ObservableHead
 from mace_torch.train import (
@@ -29,7 +29,7 @@ from mace_torch.train import (
     run_train_stage,
 )
 
-CATALOGUE = load_default_catalogue()
+CATALOGUE = DEFAULT_CATALOGUE
 
 #: The two references the isolated-atom structures carry.
 HYDROGEN, OXYGEN = -13.6, -2040.0
