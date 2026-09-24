@@ -39,7 +39,7 @@ __all__ = [
 
 #: The schema version this module writes and the only one it reads. Bump it
 #: together with the `Literal` on `ModelMetadata.schema_version`.
-SCHEMA_VERSION: Final = 3
+SCHEMA_VERSION: Final = 4
 
 
 class MetadataSchemaError(ValueError):
@@ -183,7 +183,7 @@ class ModelMetadata(_Record):
     """The mandatory per-model record. See the module docstring."""
 
     #: Pinned to the version this code reads; a bump here is a schema change.
-    schema_version: Literal[3] = SCHEMA_VERSION
+    schema_version: Literal[4] = SCHEMA_VERSION
     config: ConfigRecord
     provenance: Provenance
     data: DataSummary = Field(default_factory=DataSummary)
@@ -200,6 +200,10 @@ class ModelMetadata(_Record):
     electrostatics: ElectrostaticsRecord | None = None
     #: The elements added to its parent's, for a model made that way.
     element_extension: ElementExtensionRecord | None = None
+    #: The element table, as chemical symbols in the model's order. Stated
+    #: rather than read off the heads' energies, which a model reading out no
+    #: energy does not have.
+    elements: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _heads_name_known_sources(self) -> ModelMetadata:
