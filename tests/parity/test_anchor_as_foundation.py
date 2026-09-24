@@ -62,7 +62,7 @@ def anchor_config(legacy, work_dir: Path) -> ResolvedConfig:
                 "heads": {
                     "default": {
                         "train_file": str(TRAIN_SET),
-                        "e0s": {"isolated_atoms": {}},
+                        "e0s": {"kind": "isolated_atoms"},
                     }
                 },
                 "valid_fraction": 0.25,
@@ -144,12 +144,12 @@ def fine_tune_config(directory: Path, foundation: Path) -> ResolvedConfig:
                 "heads": {
                     "pt_head": {
                         "train_file": str(TRAIN_SET),
-                        "e0s": {"foundation": {}},
+                        "e0s": {"kind": "foundation"},
                         "weight": 0.5,
                     },
                     "DFT": {
                         "train_file": str(a_new_level_of_theory(directory / "dft.xyz")),
-                        "e0s": {"isolated_atoms": {}},
+                        "e0s": {"kind": "isolated_atoms"},
                     },
                 },
                 "valid_fraction": 0.25,

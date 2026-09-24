@@ -90,7 +90,7 @@ def checkpoint(tmp_path_factory):
                 "heads": {
                     "pbe": {
                         "train_file": str(dataset(directory / "train.xyz")),
-                        "e0s": {"isolated_atoms": {}},
+                        "e0s": {"kind": "isolated_atoms"},
                     }
                 },
                 "valid_fraction": 0.2,
@@ -344,11 +344,11 @@ def two_head_checkpoint(tmp_path_factory):
                 "heads": {
                     "pbe": {
                         "train_file": str(dataset(directory / "pbe.xyz")),
-                        "e0s": {"isolated_atoms": {}},
+                        "e0s": {"kind": "isolated_atoms"},
                     },
                     "r2scan": {
                         "train_file": str(dataset(directory / "r2scan.xyz", seed=1)),
-                        "e0s": {"isolated_atoms": {}},
+                        "e0s": {"kind": "isolated_atoms"},
                     },
                 },
                 "valid_fraction": 0.2,

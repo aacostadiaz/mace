@@ -63,7 +63,7 @@ def fine_tune(tmp_path, foundation_path, element_table):
             },
             "data": {
                 "heads": {
-                    "default": {"train_file": str(path), "e0s": {"foundation": {}}}
+                    "default": {"train_file": str(path), "e0s": {"kind": "foundation"}}
                 },
                 "valid_fraction": 0.25,
                 "pin_memory": False,

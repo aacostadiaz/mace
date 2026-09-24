@@ -618,7 +618,7 @@ def test_the_isolated_atoms_stay_out_of_the_split(tmp_path, seed):
                 "heads": {
                     "a": {
                         "train_file": str(write_dataset(tmp_path / "t.xyz", count=8)),
-                        "e0s": {"isolated_atoms": {}},
+                        "e0s": {"kind": "isolated_atoms"},
                     }
                 },
                 "valid_fraction": 0.25,

@@ -245,11 +245,16 @@ _MODEL: dict[str, Disposition] = {
 
 #: Data, files and property keys.
 _DATA: dict[str, Disposition] = {
+    **_merged(
+        "data.heads.default.e0s",
+        "one string that names five kinds of E0s becomes the kind it names",
+        "E0s",
+        applied=True,
+    ),
     **_kept(
         train_file="data.heads.default.train_file",
         valid_file="data.heads.default.valid_file",
         test_file="data.heads.default.test_file",
-        E0s="data.heads.default.e0s",
         keep_isolated_atoms="data.heads.default.keep_isolated_atoms",
         config_type_weights="data.heads.default.config_type_weights",
         test_dir="data.test_dir",
@@ -644,6 +649,31 @@ def _collapse(namespace: Any, values: dict[str, Any]) -> None:
     _collapse_schedule(namespace, values)
     _collapse_stage_two(namespace, values)
     _collapse_finetune(namespace, values)
+    _collapse_e0s(namespace, values)
+
+
+def _collapse_e0s(namespace: Any, values: dict[str, Any]) -> None:
+    """`--E0s` is a kind by name, a JSON file, or a dict literal.
+
+    Legacy reads the word ``average``, ``foundation`` or ``estimated`` as a
+    method, a path ending ``.json`` as a table in a file, and anything else as
+    a Python dict literal of atomic number to energy.
+    """
+    raw = _read(namespace, "E0s")
+    if raw is None:
+        return
+    if isinstance(raw, str) and raw.lower() in {"average", "foundation", "estimated"}:
+        spec: dict[str, Any] = {"kind": raw.lower()}
+    elif isinstance(raw, str) and raw.endswith(".json"):
+        import json
+
+        with open(raw, encoding="utf-8") as handle:
+            table = json.load(handle)
+        spec = {"kind": "table", "values": {int(z): float(e) for z, e in table.items()}}
+    else:
+        table = _literal(raw)
+        spec = {"kind": "table", "values": {int(z): float(e) for z, e in table.items()}}
+    _set(values, "data.heads.default.e0s", spec)
 
 
 def _collapse_finetune(namespace: Any, values: dict[str, Any]) -> None:
@@ -747,7 +777,7 @@ def _collapse_loss(namespace: Any, values: dict[str, Any]) -> None:
             and (delta := _read(namespace, "huber_delta")) is not None
         ):
             settings["delta"] = delta
-        _set(values, "loss.kind", {loss: settings})
+        _set(values, "loss.kind", {"kind": loss, **settings})
     for stage, prefix in (("weights", ""), ("stage_two_weights", "swa_")):
         written = {
             observable: weight
@@ -769,7 +799,7 @@ def _collapse_optimizer(namespace: Any, values: dict[str, Any]) -> None:
         for dest, field in _OPTIMIZER_SETTINGS.get(kind, {}).items()
         if (value := _read(namespace, dest)) is not None
     }
-    _set(values, "training.optimizer", {kind: settings})
+    _set(values, "training.optimizer", {"kind": kind, **settings})
 
 
 def _collapse_schedule(namespace: Any, values: dict[str, Any]) -> None:
@@ -782,7 +812,7 @@ def _collapse_schedule(namespace: Any, values: dict[str, Any]) -> None:
         for dest, field in _SCHEDULE_SETTINGS.get(kind, {}).items()
         if (value := _read(namespace, dest)) is not None
     }
-    _set(values, "training.scheduler.kind", {kind: settings})
+    _set(values, "training.scheduler.kind", {"kind": kind, **settings})
     factors = _group_factors(_read(namespace, "lr_params_factors"))
     if factors:
         _set(values, "training.scheduler.group_factors", factors)

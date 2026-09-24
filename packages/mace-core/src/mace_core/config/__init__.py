@@ -7,10 +7,10 @@ training, ...) arrive with their own tickets and are re-exported from here.
 from mace_core.config.base import (
     ConfigError,
     ConfigSection,
-    ConfigWarning,
     ReforgeBaseConfig,
     read_config_file,
 )
+from mace_core.config.cli import apply_overrides, parse_overrides
 from mace_core.config.data import DataConfig, GraphInputKeys, HeadDataConfig
 from mace_core.config.e0s import (
     E0sAverage,
@@ -40,7 +40,6 @@ __all__ = [
     "LEGACY_TRAIN_DESTS",
     "ConfigError",
     "ConfigSection",
-    "ConfigWarning",
     "DataConfig",
     "E0Spec",
     "E0sAverage",
@@ -67,7 +66,9 @@ __all__ = [
     "SolverKind",
     "StageTwoConfig",
     "TrainingConfig",
+    "apply_overrides",
     "e0_details",
     "from_namespace",
+    "parse_overrides",
     "read_config_file",
 ]

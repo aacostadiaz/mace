@@ -40,7 +40,7 @@ CONFIG = """
 runtime: {{work_dir: {work_dir}, name: tiny, seed: 1}}
 data:
   heads:
-    default: {{train_file: {train_file}, e0s: {{isolated_atoms: {{}}}}}}
+    default: {{train_file: {train_file}, e0s: {{kind: isolated_atoms}}}}
   valid_fraction: 0.2
   pin_memory: false
 model:
@@ -57,7 +57,7 @@ training:
   batch_size: 4
   valid_batch_size: 4
   lr: 0.02
-  scheduler: {{kind: {{constant: {{}}}}}}
+  scheduler: {{kind: {{kind: constant}}}}
 loss: {{weights: {{energy: 1.0, forces: 10.0}}}}
 """
 
@@ -149,8 +149,8 @@ MULTIHEAD_CONFIG = """
 runtime: {{work_dir: {work_dir}, name: tiny, seed: 1, error_table: PerAtomRMSE}}
 data:
   heads:
-    small: {{train_file: {small_file}, e0s: {{isolated_atoms: {{}}}}}}
-    large: {{train_file: {large_file}, e0s: {{isolated_atoms: {{}}}}}}
+    small: {{train_file: {small_file}, e0s: {{kind: isolated_atoms}}}}
+    large: {{train_file: {large_file}, e0s: {{kind: isolated_atoms}}}}
   valid_fraction: 0.25
   pin_memory: false
 model:
@@ -168,7 +168,7 @@ training:
   valid_batch_size: 2
   lr: 0.02
   head_balancing: balanced
-  scheduler: {{kind: {{constant: {{}}}}}}
+  scheduler: {{kind: {{kind: constant}}}}
 loss: {{weights: {{energy: 1.0, forces: 10.0}}}}
 """
 
@@ -238,8 +238,8 @@ runtime: {{work_dir: {work_dir}, name: tuned, seed: 2, error_table: PerAtomRMSE}
 finetune: {{foundation_model: {foundation}}}
 data:
   heads:
-    replay: {{train_file: {replay_file}, e0s: {{foundation: {{}}}}, weight: 0.5}}
-    target: {{train_file: {target_file}, e0s: {{isolated_atoms: {{}}}}}}
+    replay: {{train_file: {replay_file}, e0s: {{kind: foundation}}, weight: 0.5}}
+    target: {{train_file: {target_file}, e0s: {{kind: isolated_atoms}}}}
   valid_fraction: 0.25
   pin_memory: false
   skip_evaluate_heads: [replay]
@@ -250,7 +250,7 @@ training:
   batch_size: 2
   valid_batch_size: 2
   lr: 0.01
-  scheduler: {{kind: {{constant: {{}}}}}}
+  scheduler: {{kind: {{kind: constant}}}}
 """
 
 
@@ -339,7 +339,7 @@ def test_a_run_keeps_only_its_newest_run_checkpoint_by_default(tmp_path):
 
 
 #: The full-batch regime, named where the optimizer is.
-LBFGS = ("--training.optimizer", '{"lbfgs": {}}')
+LBFGS = ("--training.optimizer", '{"kind": "lbfgs"}')
 
 
 @needs_the_v1_engine

@@ -94,7 +94,7 @@ def configuration(tmp_path, heads, **data):
 def target_head(tmp_path, count=10, **settings):
     path = tmp_path / "target.xyz"
     write(path, waters(count))
-    return {"train_file": str(path), "e0s": {"isolated_atoms": {}}, **settings}
+    return {"train_file": str(path), "e0s": {"kind": "isolated_atoms"}, **settings}
 
 
 def foundation(e0s=None, heads=("pt",)):
@@ -120,7 +120,7 @@ def test_a_curated_head_reads_the_published_dataset(tmp_path):
     config = configuration(
         tmp_path,
         {
-            "replay": {"curated": "mp", "e0s": {"foundation": {}}},
+            "replay": {"curated": "mp", "e0s": {"kind": "foundation"}},
             "target": target_head(tmp_path),
         },
     )
@@ -136,7 +136,7 @@ def test_the_replay_head_copies_the_foundations_energies(tmp_path):
     config = configuration(
         tmp_path,
         {
-            "replay": {"curated": "mp", "e0s": {"foundation": {}}},
+            "replay": {"curated": "mp", "e0s": {"kind": "foundation"}},
             "target": target_head(tmp_path),
         },
     )
@@ -151,7 +151,7 @@ def test_several_foundation_heads_need_one_named(tmp_path):
     config = configuration(
         tmp_path,
         {
-            "replay": {"curated": "mp", "e0s": {"foundation": {}}},
+            "replay": {"curated": "mp", "e0s": {"kind": "foundation"}},
             "target": target_head(tmp_path),
         },
     )
@@ -168,7 +168,7 @@ def test_an_element_the_foundation_lacks_an_energy_for_is_refused(tmp_path):
     config = configuration(
         tmp_path,
         {
-            "replay": {"curated": "mp", "e0s": {"foundation": {}}},
+            "replay": {"curated": "mp", "e0s": {"kind": "foundation"}},
             "target": target_head(tmp_path),
         },
     )
@@ -213,7 +213,7 @@ def test_an_element_no_structure_holds_takes_the_foundation_s_energy(tmp_path):
 @fp64_only
 def test_a_table_declaration_keeps_its_own_value_for_an_absent_element(tmp_path):
     head = target_head(tmp_path)
-    head["e0s"] = {"table": {"values": {1: -13.5, 6: -1029.0, 8: -2040.5}}}
+    head["e0s"] = {"kind": "table", "values": {1: -13.5, 6: -1029.0, 8: -2040.5}}
     config = configuration(tmp_path, {"target": head})
     data = run_data_stage(config, CATALOGUE, foundation=foundation())
     assert data.e0s.values["target"][6] == -1029.0
@@ -275,7 +275,7 @@ def test_a_subselection_keeps_its_count_before_the_split(tmp_path):
         {
             "replay": {
                 "curated": "mp",
-                "e0s": {"foundation": {}},
+                "e0s": {"kind": "foundation"},
                 "subselect": {"num_samples": 12},
             },
             "target": target_head(tmp_path),
@@ -295,7 +295,7 @@ def test_farthest_points_without_descriptors_are_refused(tmp_path):
         {
             "replay": {
                 "curated": "mp",
-                "e0s": {"foundation": {}},
+                "e0s": {"kind": "foundation"},
                 "subselect": {"num_samples": 5, "method": "fps"},
             },
             "target": target_head(tmp_path),
@@ -317,7 +317,7 @@ def test_the_guard_repeats_the_heads_the_reference_outnumbers(tmp_path):
     target head is repeated `1 + int(0.1 / (3 / 40))` = 2 times."""
     publish_replay(50)
     heads = {
-        "replay": {"curated": "mp", "e0s": {"foundation": {}}},
+        "replay": {"curated": "mp", "e0s": {"kind": "foundation"}},
         "target": target_head(tmp_path, count=4),
     }
     data = run_data_stage(
@@ -341,7 +341,7 @@ def test_the_guard_repeats_the_heads_the_reference_outnumbers(tmp_path):
 def test_the_guard_never_repeats_the_reference(tmp_path):
     publish_replay(50)
     heads = {
-        "replay": {"curated": "mp", "e0s": {"foundation": {}}},
+        "replay": {"curated": "mp", "e0s": {"kind": "foundation"}},
         "target": target_head(tmp_path, count=4),
     }
     guarded = run_data_stage(

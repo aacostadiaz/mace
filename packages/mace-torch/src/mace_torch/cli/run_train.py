@@ -23,6 +23,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import torch.distributed as dist
+from mace_core.config import apply_overrides, parse_overrides, read_config_file
 from mace_core.config.resolved import ResolvedConfig
 from mace_core.observables import DEFAULT_CATALOGUE
 from mace_core.stages import TrainedModel
@@ -86,7 +87,10 @@ def parse(argv: Sequence[str] | None = None) -> ResolvedConfig:
             f"file and dotted overrides such as --training.lr 0.005. Run it "
             f"with --engine legacy, or write the run as a configuration."
         )
-    return ResolvedConfig.load(known.config, overrides)
+    document = read_config_file(known.config) if known.config is not None else {}
+    return ResolvedConfig.from_dict(
+        apply_overrides(document, parse_overrides(overrides))
+    )
 
 
 def run(config: ResolvedConfig) -> TrainedModel:
