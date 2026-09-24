@@ -123,10 +123,12 @@ class MagneticConfig(FrozenSection):
     """The moment-reading architecture, read by the ``magnetic`` model.
 
     Args:
-        saturation: The moment length at which each element saturates, in muB,
-            by atomic number. An element of the table that is not listed
-            saturates at one, and a listed element outside the table is
-            ignored, so one mapping serves every dataset.
+        saturation: The moment length at which each element saturates, in
+            muB. By atomic number, where an element of the table that is not
+            listed saturates at one and a listed element outside the table is
+            ignored, so one mapping serves every dataset. Or one value per
+            element of the table in its order, which is the frozen tree's
+            older form, or one value for every element.
         num_basis: How many Chebyshev polynomials the moment length is
             expanded in for the radial networks.
         lmax: The highest degree of the moment harmonics.
@@ -138,7 +140,9 @@ class MagneticConfig(FrozenSection):
             they keep the values they were built or loaded with.
     """
 
-    saturation: dict[int, float] = Field(default_factory=dict)
+    saturation: dict[int, float] | tuple[float, ...] | float = Field(
+        default_factory=dict
+    )
     num_basis: int = Field(default=8, ge=1)
     lmax: int = Field(default=3, ge=0)
     one_body: bool = False
@@ -147,8 +151,16 @@ class MagneticConfig(FrozenSection):
 
     @field_validator("saturation")
     @classmethod
-    def _positive(cls, value: dict[int, float]) -> dict[int, float]:
-        bad = {z: m for z, m in value.items() if not m > 0}
+    def _positive(
+        cls, value: dict[int, float] | tuple[float, ...] | float
+    ) -> dict[int, float] | tuple[float, ...] | float:
+        if isinstance(value, dict):
+            given = list(value.values())
+        elif isinstance(value, tuple):
+            given = list(value)
+        else:
+            given = [value]
+        bad = [m for m in given if not m > 0]
         if bad:
             raise ValueError(
                 f"model.magnetic.saturation has {bad}: a saturation is a moment "
@@ -157,8 +169,25 @@ class MagneticConfig(FrozenSection):
         return value
 
     def saturation_for(self, atomic_numbers: Sequence[int]) -> list[float]:
-        """One saturation per element of ``atomic_numbers``, in its order."""
-        return [float(self.saturation.get(int(z), 1.0)) for z in atomic_numbers]
+        """One saturation per element of ``atomic_numbers``, in its order.
+
+        Raises:
+            ValueError: If the saturations are a list of another length than
+                the element table.
+        """
+        numbers = [int(z) for z in atomic_numbers]
+        if isinstance(self.saturation, dict):
+            return [float(self.saturation.get(z, 1.0)) for z in numbers]
+        if isinstance(self.saturation, tuple):
+            if len(self.saturation) != len(numbers):
+                raise ValueError(
+                    f"model.magnetic.saturation has {len(self.saturation)} "
+                    f"values and expected {len(numbers)}, one per element of "
+                    f"the table {numbers}. Give them by atomic number instead "
+                    f"to be independent of the table."
+                )
+            return [float(value) for value in self.saturation]
+        return [float(self.saturation)] * len(numbers)
 
 
 class ModelConfig(FrozenSection):
