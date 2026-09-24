@@ -206,6 +206,16 @@ GRAPH_SCHEMA: Mapping[str, FieldSpec] = {
         "from the structure's charge labels. Present only for a model that "
         "reads it.",
     ),
+    "magmom": FieldSpec(
+        ("n_nodes", 3),
+        "float64",
+        False,
+        "nodes",
+        "zero",
+        "The magnetic moment on each atom, in Bohr magnetons. An input the "
+        "magnetic model reads and differentiates against, not a label it "
+        "predicts. Present only for a model that reads it.",
+    ),
 }
 
 #: What a structure that does not say has, for each per-structure input a model
@@ -218,8 +228,11 @@ GRAPH_INPUT_DEFAULTS: Mapping[str, tuple[float, ...]] = {
 }
 
 #: The same, for each per-atom input: the value every atom of a structure that
-#: does not say has.
-NODE_INPUT_DEFAULTS: Mapping[str, float] = {"charges": 0.0}
+#: does not say has, one entry per component. No charge, and no moment.
+NODE_INPUT_DEFAULTS: Mapping[str, tuple[float, ...]] = {
+    "charges": (0.0,),
+    "magmom": (0.0, 0.0, 0.0),
+}
 
 
 class GraphValidationError(ValueError):
