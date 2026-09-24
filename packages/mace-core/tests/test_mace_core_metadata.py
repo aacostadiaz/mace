@@ -152,7 +152,7 @@ def test_future_schema_version_is_rejected_clearly():
     [
         (
             lambda d: d.pop("schema_version"),
-            "schema_version None; expected the integer 1",
+            f"schema_version None; expected the integer {SCHEMA_VERSION}",
         ),
         (lambda d: d.update(schema_version="1"), "schema_version '1'; expected"),
         (lambda d: d.update(schema_version=1.0), "schema_version 1.0; expected"),

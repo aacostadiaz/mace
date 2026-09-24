@@ -27,6 +27,7 @@ __all__ = [
     "DataSourceSummary",
     "DataSummary",
     "E0Details",
+    "ElectrostaticsRecord",
     "HeadSummary",
     "MetadataSchemaError",
     "ModelMetadata",
@@ -37,7 +38,7 @@ __all__ = [
 
 #: The schema version this module writes and the only one it reads. Bump it
 #: together with the `Literal` on `ModelMetadata.schema_version`.
-SCHEMA_VERSION: Final = 1
+SCHEMA_VERSION: Final = 2
 
 
 class MetadataSchemaError(ValueError):
@@ -128,6 +129,26 @@ class HeadSummary(_Record):
     sources: list[str] = Field(default_factory=list)
 
 
+class ElectrostaticsRecord(_Record):
+    """The long-range solver a model computes with, as model state.
+
+    A solver that does not reproduce the reference bit for bit gives other
+    numbers, so which one a model was trained with is part of the model. It
+    is recorded apart from the configuration because loading reads it before
+    any model is built, and because a converted artifact has no training run
+    whose configuration would say.
+    """
+
+    #: The name it is registered under.
+    solver: str
+    #: Whether it declared bit parity with the reference, which decides whether
+    #: another solver may stand in for it at load time.
+    bit_parity: bool
+    #: The solve, as :func:`mace_core.electrostatics.descriptor_record` writes
+    #: it. A rebuilt model's solve is compared against it.
+    descriptor: dict[str, Any] = Field(default_factory=dict)
+
+
 class Citation(_Record):
     """One work users of the model are asked to cite."""
 
@@ -143,7 +164,7 @@ class ModelMetadata(_Record):
     """The mandatory per-model record. See the module docstring."""
 
     #: Pinned to the version this code reads; a bump here is a schema change.
-    schema_version: Literal[1] = SCHEMA_VERSION
+    schema_version: Literal[2] = SCHEMA_VERSION
     config: ConfigRecord
     provenance: Provenance
     data: DataSummary = Field(default_factory=DataSummary)
@@ -156,6 +177,8 @@ class ModelMetadata(_Record):
     #: The models this one was built from, each with its own record inside, so
     #: the whole lineage travels with the model.
     parents: list[ParentModel] = Field(default_factory=list)
+    #: The long-range solver, for a model that carries a long-range term.
+    electrostatics: ElectrostaticsRecord | None = None
 
     @model_validator(mode="after")
     def _heads_name_known_sources(self) -> ModelMetadata:
