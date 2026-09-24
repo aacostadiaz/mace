@@ -75,9 +75,10 @@ class MACEBackbone(nn.Module):
             returning the features to carry into the next layer. This is where
             a domain-decomposed run slices off its ghost nodes. Absent by
             default, and when absent the forward is the hook-free path exactly.
-        full_last_layer: Keep every irrep in the last layer's features rather
-            than only its scalars. A model that reads more than invariants off
-            the last layer needs it: a charge-aware model reads dipoles there.
+        last_layer_irreps: One channel's irreps in the last layer's features.
+            Only its scalars by default, since an energy reads nothing else
+            off it. A model that reads more keeps more: a charge-aware model
+            keeps every irrep, and a dipole-only model keeps only the vectors.
         element_agnostic_product: Share the product basis's weights across
             elements rather than holding one set per element.
         edge_axes: The order the edge vector's components are handed to the
@@ -103,7 +104,7 @@ class MACEBackbone(nn.Module):
         precision: Precision = "float64",
         locality: Callable[[Tensor, Mapping[str, Any]], Tensor] | None = None,
         node_inputs: Sequence[InputSpec] = (),
-        full_last_layer: bool = False,
+        last_layer_irreps: str = "0e",
         element_agnostic_product: bool = False,
         edge_axes: tuple[int, int, int] = (0, 1, 2),
     ) -> None:
@@ -160,10 +161,10 @@ class MACEBackbone(nn.Module):
         interactions, products = [], []
         for layer in range(num_layers):
             # The first layer reads the embedding, which is scalars. The last
-            # one produces scalars, because only its invariants are read out.
+            # one produces only what is read off it, scalars for an energy.
             node_per_channel = self.embedding_irreps if layer == 0 else hidden_irreps
-            last = layer == num_layers - 1 and not full_last_layer
-            product_per_channel = "0e" if last else hidden_irreps
+            last = layer == num_layers - 1
+            product_per_channel = last_layer_irreps if last else hidden_irreps
             if layer == 0:
                 interactions.append(
                     InteractionBlock(
@@ -222,7 +223,7 @@ class MACEBackbone(nn.Module):
         # trained artifacts carry: the convolution couples the node features
         # with the harmonics and keeps what lands on those irreps.
         self.layer_irreps = [
-            "0e" if layer == num_layers - 1 and not full_last_layer else hidden_irreps
+            last_layer_irreps if layer == num_layers - 1 else hidden_irreps
             for layer in range(num_layers)
         ]
         self.interactions = nn.ModuleList(interactions)
@@ -343,6 +344,9 @@ class MACEBackbone(nn.Module):
                 pieces.append(layer)
                 continue
             multiplicity, irrep = Irreps.parse(self.layer_irreps[index]).terms[0]
+            if irrep.degree != 0 or irrep.parity != 1:
+                # A layer that keeps no scalars has no invariants to offer.
+                continue
             pieces.append(
                 layer[..., : self.num_features * multiplicity * irrep.dimension]
             )
