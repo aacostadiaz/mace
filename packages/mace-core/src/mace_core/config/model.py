@@ -25,15 +25,17 @@ section records the choice; the semantics are those tickets'.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from mace_core.config.section import FrozenSection
 from mace_core.kernels.descriptors import RadialKind
 
 __all__ = [
     "ClebschGordanBasis",
+    "MagneticConfig",
     "ModelConfig",
     "PolarConfig",
     "ReadoutConfig",
@@ -117,6 +119,77 @@ class PolarConfig(FrozenSection):
     field_readout: Literal["one_body_mlp"] = "one_body_mlp"
 
 
+class MagneticConfig(FrozenSection):
+    """The moment-reading architecture, read by the ``magnetic`` model.
+
+    Args:
+        saturation: The moment length at which each element saturates, in
+            muB. By atomic number, where an element of the table that is not
+            listed saturates at one and a listed element outside the table is
+            ignored, so one mapping serves every dataset. Or one value per
+            element of the table in its order, which is the frozen tree's
+            older form, or one value for every element.
+        num_basis: How many Chebyshev polynomials the moment length is
+            expanded in for the radial networks.
+        lmax: The highest degree of the moment harmonics.
+        one_body: Whether each atom carries an energy of its moment length
+            alone, beside the readouts.
+        one_body_basis: How many polynomials that term has, the constant
+            included.
+        train_one_body: Whether that term's coefficients are trained. Off,
+            they keep the values they were built or loaded with.
+    """
+
+    saturation: dict[int, float] | tuple[float, ...] | float = Field(
+        default_factory=dict
+    )
+    num_basis: int = Field(default=8, ge=1)
+    lmax: int = Field(default=3, ge=0)
+    one_body: bool = False
+    one_body_basis: int = Field(default=10, ge=1)
+    train_one_body: bool = True
+
+    @field_validator("saturation")
+    @classmethod
+    def _positive(
+        cls, value: dict[int, float] | tuple[float, ...] | float
+    ) -> dict[int, float] | tuple[float, ...] | float:
+        if isinstance(value, dict):
+            given = list(value.values())
+        elif isinstance(value, tuple):
+            given = list(value)
+        else:
+            given = [value]
+        bad = [m for m in given if not m > 0]
+        if bad:
+            raise ValueError(
+                f"model.magnetic.saturation has {bad}: a saturation is a moment "
+                f"length, and a length at or below zero saturates every moment."
+            )
+        return value
+
+    def saturation_for(self, atomic_numbers: Sequence[int]) -> list[float]:
+        """One saturation per element of ``atomic_numbers``, in its order.
+
+        Raises:
+            ValueError: If the saturations are a list of another length than
+                the element table.
+        """
+        numbers = [int(z) for z in atomic_numbers]
+        if isinstance(self.saturation, dict):
+            return [float(self.saturation.get(z, 1.0)) for z in numbers]
+        if isinstance(self.saturation, tuple):
+            if len(self.saturation) != len(numbers):
+                raise ValueError(
+                    f"model.magnetic.saturation has {len(self.saturation)} "
+                    f"values and expected {len(numbers)}, one per element of "
+                    f"the table {numbers}. Give them by atomic number instead "
+                    f"to be independent of the table."
+                )
+            return [float(value) for value in self.saturation]
+        return [float(self.saturation)] * len(numbers)
+
+
 class ModelConfig(FrozenSection):
     """What to build, and what to make it produce.
 
@@ -162,6 +235,8 @@ class ModelConfig(FrozenSection):
             three flags whose third only chose between building in a layout
             and converting after, and canonical weights remove the conversion.
         polar: The charge-aware architecture, read by the ``polar`` model.
+        magnetic: The moment-reading architecture, read by the ``magnetic``
+            model.
     """
 
     model: str = "scale_shift"
@@ -190,3 +265,4 @@ class ModelConfig(FrozenSection):
     readout: ReadoutConfig = ReadoutConfig()
     backend: str = "reference"
     polar: PolarConfig = PolarConfig()
+    magnetic: MagneticConfig = MagneticConfig()
