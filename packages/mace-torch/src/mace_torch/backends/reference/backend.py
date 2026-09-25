@@ -50,6 +50,11 @@ from mace_torch.kernels.ops import (
     segment_sum,
     symmetric_contraction,
 )
+from mace_torch.nn.layout import (
+    channel_layout_index,
+    inverse_layout_index,
+    path_layout_index,
+)
 from mace_torch.nn.radial import (
     BesselBasis,
     ChebyshevBasis,
@@ -241,6 +246,9 @@ class ReferenceSymmetricContraction(nn.Module):
     irrep, and this is that, with the loop kept explicit.
     """
 
+    to_channels: Tensor
+    from_channels: Tensor
+
     def __init__(self, descriptor: SymmetricContractionDescriptor) -> None:
         super().__init__()
         self.descriptor = descriptor
@@ -278,6 +286,23 @@ class ReferenceSymmetricContraction(nn.Module):
             bases.append(_ConstantTensors(tables))
         self.weights = nn.ParameterList(weights)
         self.bases = nn.ModuleList(bases)
+        self.width_in = Irreps.parse(descriptor.irreps_in).dimension
+        # The kernel works channel by channel, so the grouped values are put
+        # into channel-major order for it and back afterwards.
+        self.register_buffer(
+            "to_channels",
+            torch.tensor(
+                inverse_layout_index(descriptor.irreps_in, descriptor.num_features)
+            ),
+            persistent=False,
+        )
+        self.register_buffer(
+            "from_channels",
+            torch.tensor(
+                channel_layout_index(descriptor.irreps_out, descriptor.num_features)
+            ),
+            persistent=False,
+        )
 
     def initialize_weights(self, seed: int) -> None:
         """A standard normal, unscaled.
@@ -303,17 +328,24 @@ class ReferenceSymmetricContraction(nn.Module):
         return [self.weights[base + order] for order in range(self.orders)]
 
     def forward(self, features: Tensor, element: Tensor) -> Tensor:
+        """``[n_nodes, C * dim_in]`` in, ``[n_nodes, C * dim_out]`` out."""
+        nodes = features.shape[0]
+        channels = features[..., self.to_channels].reshape(
+            nodes, self.descriptor.num_features, self.width_in
+        )
         # `nn.ModuleList` erases what it holds, so the element type has to be
         # said here. It is the one thing put into `self.bases`, two lines of
         # the constructor away.
         bases = cast("list[_ConstantTensors]", list(self.bases))
         pieces = [
             symmetric_contraction(
-                features, self._group(position), list(tables), element
+                channels, self._group(position), list(tables), element
             )
             for position, tables in enumerate(bases)
         ]
-        return torch.cat(pieces, dim=-1)
+        # The width is spelled out, since `-1` cannot be inferred for zero rows.
+        joined = torch.cat(pieces, dim=-1).reshape(nodes, self.from_channels.shape[0])
+        return joined[..., self.from_channels]
 
     def to_canonical(self) -> dict[str, Tensor]:
         """The flat ``[Z, A, mul]`` array, in the pinned path order.
@@ -404,6 +436,8 @@ class ReferenceChannelwiseTPConv(nn.Module):
     #: Annotated because `register_buffer` alone leaves it typed as a `Module`,
     #: and then reading its shape reads as subscripting a module.
     coefficients: Tensor
+    to_channels: Tensor
+    from_paths: Tensor
 
     """The message-passing tensor product. Node-level, always."""
 
@@ -414,6 +448,25 @@ class ReferenceChannelwiseTPConv(nn.Module):
         coefficients = _coupling_coefficients(descriptor)
         self.register_buffer(
             "coefficients", torch.tensor(coefficients, dtype=dtype), persistent=False
+        )
+        self.width_node = Irreps.parse(descriptor.irreps_node).dimension
+        paths = channelwise_paths(
+            descriptor.irreps_node, descriptor.irreps_edge, descriptor.irreps_out
+        )
+        # The kernel works channel by channel, so the grouped node features
+        # are put into channel-major order for it, and its channel-major
+        # result back into one block per path.
+        self.register_buffer(
+            "to_channels",
+            torch.tensor(
+                inverse_layout_index(descriptor.irreps_node, descriptor.num_features)
+            ),
+            persistent=False,
+        )
+        self.register_buffer(
+            "from_paths",
+            torch.tensor(path_layout_index(paths, descriptor.num_features)),
+            persistent=False,
         )
 
     @property
@@ -430,8 +483,12 @@ class ReferenceChannelwiseTPConv(nn.Module):
         receiver: Tensor,
         num_nodes: int,
     ) -> Tensor:
-        return channelwise_tp_conv(
-            node_features,
+        """Grouped node features in, one grouped block per path out."""
+        channels = node_features[..., self.to_channels].reshape(
+            -1, self.descriptor.num_features, self.width_node
+        )
+        message = channelwise_tp_conv(
+            channels,
             edge_attributes,
             radial_weights,
             self.coefficients,
@@ -439,6 +496,11 @@ class ReferenceChannelwiseTPConv(nn.Module):
             receiver,
             num_nodes,
         )
+        # The width is spelled out: a structure with no edges has zero rows
+        # here, and `-1` cannot be inferred from an empty tensor.
+        return message.reshape(num_nodes, self.from_paths.shape[0])[
+            ..., self.from_paths
+        ]
 
 
 class ReferenceFullyConnectedTP(nn.Module):

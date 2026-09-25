@@ -99,23 +99,35 @@ class ChannelwiseTPConvDescriptor(Descriptor):
     """The message-passing tensor product, channel by channel, over the edges.
 
     Attributes:
-        irreps_node: The sender node features.
+        irreps_node: One channel's sender node features.
         irreps_edge: The edge attributes, normally spherical harmonics.
-        irreps_out: The message irreps before the node-level reduction.
+        irreps_out: One channel's message irreps before the node-level
+            reduction.
         num_radial: Width of the radial embedding whose MLP supplies the
             weights.
+        num_features: The channel count.
 
     The op is **always node-level**: it returns ``[n_nodes, ...]``, never
     ``[n_edges, ...]``. Whether the reduction over edges is fused into the
     kernel is the backend's business and not the model's, which is what removes
     the six ``hasattr(self, "conv_fusion")`` branches the frozen tree carries
     through its interaction blocks.
+
+    **Its values are grouped by irrep, channels inside each irrep** (``mul_ir``
+    over the expanded declaration), which is the layout every other op in the
+    chain reads and writes. The node features are ``[n_nodes, C * dim_node]``
+    over ``C`` copies of each term of ``irreps_node``; the result is
+    ``[n_nodes, C * dim_paths]``, one block of ``C`` channels per path in the
+    order :func:`~mace_core.kernels.paths.channelwise_paths` pins; the radial
+    weights are ``[n_edges, n_paths, C]``. How a backend arranges them inside
+    its kernel is its own business, and never a permute in the model.
     """
 
     irreps_node: str = "0e"
     irreps_edge: str = "0e"
     irreps_out: str = "0e"
     num_radial: int = 8
+    num_features: int = 1
 
     @property
     def weight_numel(self) -> int:
@@ -127,9 +139,13 @@ class ChannelwiseTPConvDescriptor(Descriptor):
 class SymmetricContractionDescriptor(Descriptor):
     """The many-body contraction over the reduced Clebsch-Gordan basis.
 
+    Its values are grouped by irrep, channels inside each irrep, like the
+    convolution's: ``[n_nodes, C * dim_in]`` in and ``[n_nodes, C * dim_out]``
+    out, over ``C`` copies of each term of the declarations.
+
     Attributes:
-        irreps_in: The node features being contracted.
-        irreps_out: The output irreps to keep.
+        irreps_in: One channel's node features being contracted.
+        irreps_out: One channel's output irreps to keep.
         correlation: The body order.
         num_elements: How many chemical elements carry their own weights.
         num_features: The channel width.

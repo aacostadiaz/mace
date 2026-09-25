@@ -11,8 +11,6 @@ construction, and the op is held.
 
 from __future__ import annotations
 
-import torch
-from mace_core.clebsch_gordan.irreps import Irreps
 from mace_core.kernels.descriptors import (
     LinearDescriptor,
     SymmetricContractionDescriptor,
@@ -21,9 +19,7 @@ from mace_core.kernels.precision import Precision
 from torch import Tensor, nn
 
 from mace_torch.nn.layout import (
-    channel_layout_index,
     expanded_irreps,
-    inverse_layout_index,
 )
 
 __all__ = ["EquivariantProductBasisBlock"]
@@ -50,9 +46,6 @@ class EquivariantProductBasisBlock(nn.Module):
         precision: The dtype every op is built at.
     """
 
-    to_channels: Tensor
-    from_channels: Tensor
-
     def __init__(
         self,
         backend,
@@ -65,8 +58,6 @@ class EquivariantProductBasisBlock(nn.Module):
     ) -> None:
         super().__init__()
         self.num_features = num_features
-        self.width_in = Irreps.parse(irreps_in).dimension
-        self.width_out = Irreps.parse(irreps_out).dimension
         out_flat = expanded_irreps(irreps_out, num_features)
 
         self.contraction = backend.make_symmetric_contraction(
@@ -84,16 +75,6 @@ class EquivariantProductBasisBlock(nn.Module):
                 irreps_in=out_flat, irreps_out=out_flat, precision=precision
             )
         )
-        self.register_buffer(
-            "to_channels",
-            torch.tensor(inverse_layout_index(irreps_in, num_features)),
-            persistent=False,
-        )
-        self.register_buffer(
-            "from_channels",
-            torch.tensor(channel_layout_index(irreps_out, num_features)),
-            persistent=False,
-        )
 
     def forward(
         self, message: Tensor, element: Tensor, skip: Tensor | None = None
@@ -106,13 +87,7 @@ class EquivariantProductBasisBlock(nn.Module):
             skip: The residual interaction's carried skip, already at this
                 block's output declaration, or ``None`` in the first layer.
         """
-        nodes = message.shape[0]
-        features = message[..., self.to_channels].reshape(
-            nodes, self.num_features, self.width_in
-        )
-        contracted = self.contraction(features, element)
-        contracted = contracted.reshape(nodes, -1)[..., self.from_channels]
-        mapped = self.linear(contracted)
+        mapped = self.linear(self.contraction(message, element))
         if skip is not None:
             return mapped + skip
         return mapped
