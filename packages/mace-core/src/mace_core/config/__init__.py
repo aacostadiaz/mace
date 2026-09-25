@@ -30,7 +30,8 @@ from mace_core.config.model import (
     ReadoutConfig,
 )
 from mace_core.config.provenance import E0_METHODS, e0_details
-from mace_core.config.resolved import FinetuneConfig, PseudolabelConfig, ResolvedConfig
+from mace_core.config.pseudolabels import PseudolabelConfig, PseudolabelProvenance
+from mace_core.config.resolved import FinetuneConfig, ResolvedConfig
 from mace_core.config.runtime import RuntimeConfig
 from mace_core.config.section import FrozenSection
 from mace_core.config.training import (
@@ -64,6 +65,7 @@ __all__ = [
     "ModelConfig",
     "PolarConfig",
     "PseudolabelConfig",
+    "PseudolabelProvenance",
     "ReadoutConfig",
     "ReforgeBaseConfig",
     "ResolvedConfig",
