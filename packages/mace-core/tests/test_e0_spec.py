@@ -7,7 +7,8 @@ keep a run going on silently wrong energies are gone.
 """
 
 import pytest
-from mace_core.config import apply_overrides, parse_overrides, read_config_file
+from mace_core.cli import set_value
+from mace_core.config import read_config_file
 from mace_core.config.base import ReforgeBaseConfig
 from mace_core.config.e0s import (
     FOUNDATION_E0_KINDS,
@@ -22,10 +23,13 @@ from mace_core.config.section import FrozenSection
 from pydantic import ValidationError
 
 
-def loaded(schema, path=None, cli_overrides=()):
-    """A config the way a command line builds one: a file, then overrides."""
+def loaded(schema, path=None, settings=None):
+    """A config the way a command line builds one: a file, then the values its
+    flags set, each at its dotted path."""
     document = read_config_file(path) if path is not None else {}
-    return schema.from_dict(apply_overrides(document, parse_overrides(cli_overrides)))
+    for dotted_path, value in (settings or {}).items():
+        set_value(document, dotted_path, value)
+    return schema.from_dict(document)
 
 
 class Head(FrozenSection):
@@ -66,10 +70,7 @@ def test_a_kind_is_written_beside_its_settings():
     tagged form, both read and exported."""
     config = loaded(
         Root,
-        cli_overrides=[
-            "--head.e0s",
-            '{"kind": "foundation", "head": "mp", "missing": "zero"}',
-        ],
+        settings={"head.e0s": {"kind": "foundation", "head": "mp", "missing": "zero"}},
     )
     assert config.head.e0s == E0sFromFoundation(head="mp", missing="zero")
     assert config.to_resolved_dict()["head"]["e0s"] == {
@@ -81,7 +82,7 @@ def test_a_kind_is_written_beside_its_settings():
 
 def test_an_unknown_kind_names_the_kinds_there_are():
     with pytest.raises(ValidationError, match="'isolated_atoms'"):
-        loaded(Root, cli_overrides=["--head.e0s", '{"kind": "from_thin_air"}'])
+        loaded(Root, settings={"head.e0s": {"kind": "from_thin_air"}})
 
 
 def test_a_setting_that_belongs_to_another_kind_is_refused():
@@ -89,10 +90,7 @@ def test_a_setting_that_belongs_to_another_kind_is_refused():
     with pytest.raises(ValidationError, match=r"head\.e0s\.average\.on_missing_energy"):
         loaded(
             Root,
-            cli_overrides=[
-                "--head.e0s",
-                '{"kind": "average", "on_missing_energy": "zero"}',
-            ],
+            settings={"head.e0s": {"kind": "average", "on_missing_energy": "zero"}},
         )
 
 

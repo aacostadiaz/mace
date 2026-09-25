@@ -15,10 +15,12 @@ What is here so far:
   first); unknown keys are pydantic errors at every level;
   `to_resolved_dict()` is the fully defaulted, round-trippable export and
   `to_user_dict()` holds only what was set. The base has no command-line
-  knowledge; `config.cli` holds the `--a.b value` grammar (`parse_overrides()`
-  to a mapping of dotted paths, `apply_overrides()` to write it into the
-  parsed dict) for the CLI to compose with `read_config_file()` and
-  `from_dict()`.
+  knowledge.
+- `mace_core.cli`: the `mace` program. Its commands come from the packages
+  that implement them, through the `mace.commands` entry point group, so
+  torch and jax plug in and this package declares none. A command with a
+  schema reads one file with `--config`, writes its few explicit flags into
+  it, and validates once; there is no general override syntax.
 - `mace_core.metadata` — `ModelMetadata`, the versioned record every trained
   model carries (config as written and as resolved, provenance, a summary per
   data source, per head its E0s and the sources it consumed, DOI, citations,

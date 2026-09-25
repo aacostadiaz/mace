@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pytest
 import yaml
-from mace_core.config import apply_overrides, parse_overrides, read_config_file
+from mace_core.cli import set_value
+from mace_core.config import read_config_file
 from mace_core.config.base import ConfigSection
 from mace_core.config.e0s import E0sFromFoundation, E0sIsolatedAtoms
 from mace_core.config.resolved import ResolvedConfig
@@ -25,10 +26,13 @@ from mace_core.config.training import (
 from pydantic import BaseModel, ValidationError
 
 
-def loaded(schema, path=None, cli_overrides=()):
-    """A config the way a command line builds one: a file, then overrides."""
+def loaded(schema, path=None, settings=None):
+    """A config the way a command line builds one: a file, then the values its
+    flags set, each at its dotted path."""
     document = read_config_file(path) if path is not None else {}
-    return schema.from_dict(apply_overrides(document, parse_overrides(cli_overrides)))
+    for dotted_path, value in (settings or {}).items():
+        set_value(document, dotted_path, value)
+    return schema.from_dict(document)
 
 
 SECTIONS = (
@@ -64,24 +68,23 @@ def test_the_seven_sections_are_the_declared_ones():
 def test_a_config_loads_from_every_format(tmp_path, suffix):
     path = write(tmp_path, suffix, {"model": {"r_max": 4.5}})
     assert (
-        loaded(ResolvedConfig, path, ["--model.model=an-architecture"]).model.r_max
+        loaded(ResolvedConfig, path, {"model.model": "an-architecture"}).model.r_max
         == 4.5
     )
 
 
-def test_an_override_reaches_every_section(tmp_path):
+def test_a_value_reaches_every_section(tmp_path):
     config = loaded(
         ResolvedConfig,
-        cli_overrides=[
-            "--model.model=an-architecture",
-            "--runtime.name=run",
-            "--data.valid_fraction=0.2",
-            "--model.r_max=3.0",
-            "--loss.weights",
-            '{"energy": 5.0}',
-            "--training.lr=0.5",
-            "--finetune.foundation_model=medium",
-        ],
+        settings={
+            "model.model": "an-architecture",
+            "runtime.name": "run",
+            "data.valid_fraction": "0.2",
+            "model.r_max": "3.0",
+            "loss.weights": {"energy": 5.0},
+            "training.lr": "0.5",
+            "finetune.foundation_model": "medium",
+        },
     )
     assert config.runtime.name == "run"
     assert config.data.valid_fraction == 0.2
@@ -91,26 +94,25 @@ def test_an_override_reaches_every_section(tmp_path):
     assert config.finetune.foundation_model == "medium"
 
 
-def test_precedence_runs_defaults_then_file_then_override(tmp_path):
+def test_the_file_beats_the_defaults_and_a_flag_beats_the_file(tmp_path):
     path = write(tmp_path, ".yaml", {"training": {"lr": 0.02, "batch_size": 32}})
     default = ResolvedConfig(model={"model": "an-architecture"})
-    from_file = loaded(ResolvedConfig, path, ["--model.model=an-architecture"])
-    overridden = loaded(
-        ResolvedConfig, path, ["--model.model=an-architecture", "--training.lr=0.5"]
+    from_file = loaded(ResolvedConfig, path, {"model.model": "an-architecture"})
+    flagged = loaded(
+        ResolvedConfig, path, {"model.model": "an-architecture", "training.lr": "0.5"}
     )
 
     assert default.training.lr != 0.02
     assert from_file.training.lr == 0.02
-    assert overridden.training.lr == 0.5
-    # The file's other setting survives the override, rather than the override
-    # replacing the section.
-    assert overridden.training.batch_size == 32
+    assert flagged.training.lr == 0.5
+    # The flag sets one value; the file's other setting in its section stays.
+    assert flagged.training.batch_size == 32
 
 
 def test_an_unknown_key_names_it(tmp_path):
     path = write(tmp_path, ".yaml", {"training": {"learning_rate": 0.1}})
     with pytest.raises(ValidationError, match=r"training\.learning_rate"):
-        loaded(ResolvedConfig, path, ["--model.model=an-architecture"])
+        loaded(ResolvedConfig, path, {"model.model": "an-architecture"})
 
 
 def test_resolving_twice_is_a_fixed_point(tmp_path):
@@ -173,7 +175,7 @@ def test_a_resolved_config_cannot_be_written_to_at_any_depth():
 def test_one_work_dir_replaces_six_directory_flags():
     config = loaded(
         ResolvedConfig,
-        cli_overrides=["--model.model=an-architecture", "--runtime.work_dir=/runs/a"],
+        settings={"model.model": "an-architecture", "runtime.work_dir": "/runs/a"},
     )
     assert set(WORK_DIR_LAYOUT) == {
         "logs",
@@ -195,11 +197,7 @@ def test_a_declared_observable_with_no_weight_takes_one():
     """A declared property contributing nothing is asked for, never inherited."""
     config = loaded(
         ResolvedConfig,
-        cli_overrides=[
-            "--model.model=an-architecture",
-            "--loss.weights",
-            '{"forces": 100.0}',
-        ],
+        settings={"model.model": "an-architecture", "loss.weights": {"forces": 100.0}},
     )
     assert config.loss.weight("forces") == 100.0
     assert config.loss.weight("energy") == 1.0
@@ -208,13 +206,11 @@ def test_a_declared_observable_with_no_weight_takes_one():
 def test_the_second_stage_only_overrides_the_weights_it_names():
     config = loaded(
         ResolvedConfig,
-        cli_overrides=[
-            "--model.model=an-architecture",
-            "--loss.weights",
-            '{"energy": 1.0, "forces": 100.0}',
-            "--loss.stage_two_weights",
-            '{"energy": 1000.0}',
-        ],
+        settings={
+            "model.model": "an-architecture",
+            "loss.weights": {"energy": 1.0, "forces": 100.0},
+            "loss.stage_two_weights": {"energy": 1000.0},
+        },
     )
     assert config.loss.weight("energy", stage_two=True) == 1000.0
     assert config.loss.weight("forces", stage_two=True) == 100.0
@@ -224,12 +220,7 @@ def test_the_observable_list_is_not_inferred_from_the_model_name():
     """Legacy reads the class name and sets six booleans from it."""
     config = loaded(
         ResolvedConfig,
-        cli_overrides=[
-            "--model.model=an-architecture",
-            "--model.model=atomic_dipoles",
-            "--model.observables",
-            '["dipole"]',
-        ],
+        settings={"model.model": "atomic_dipoles", "model.observables": ["dipole"]},
     )
     assert config.model.model == "atomic_dipoles"
     assert config.model.observables == ("dipole",)
@@ -253,11 +244,10 @@ def test_the_schedulefree_tuning_lives_with_its_optimizer():
     """Legacy has the three as top-level flags meaning nothing under Adam."""
     config = loaded(
         ResolvedConfig,
-        cli_overrides=[
-            "--model.model=an-architecture",
-            "--training.optimizer",
-            '{"kind": "schedulefree", "beta1": 0.8}',
-        ],
+        settings={
+            "model.model": "an-architecture",
+            "training.optimizer": {"kind": "schedulefree", "beta1": 0.8},
+        },
     )
     optimizer = config.training.optimizer
     assert isinstance(optimizer, ScheduleFreeOptimizer)
@@ -265,11 +255,10 @@ def test_the_schedulefree_tuning_lives_with_its_optimizer():
     with pytest.raises(ValidationError, match="beta1"):
         loaded(
             ResolvedConfig,
-            cli_overrides=[
-                "--model.model=an-architecture",
-                "--training.optimizer",
-                '{"kind": "adam", "beta1": 0.8}',
-            ],
+            settings={
+                "model.model": "an-architecture",
+                "training.optimizer": {"kind": "adam", "beta1": 0.8},
+            },
         )
 
 
@@ -285,17 +274,19 @@ def test_e0s_read_from_a_foundation_model_need_one_configured(kind):
     with pytest.raises(ValidationError, match="foundation_model is not set"):
         loaded(
             ResolvedConfig,
-            cli_overrides=["--model.model=an-architecture", "--data.heads", heads],
+            settings={
+                "model.model": "an-architecture",
+                "data.heads": json.loads(heads),
+            },
         )
 
     allowed = loaded(
         ResolvedConfig,
-        cli_overrides=[
-            "--model.model=an-architecture",
-            "--data.heads",
-            heads,
-            "--finetune.foundation_model=medium",
-        ],
+        settings={
+            "model.model": "an-architecture",
+            "data.heads": json.loads(heads),
+            "finetune.foundation_model": "medium",
+        },
     )
     assert allowed.data.heads["pbe"].e0s.kind == kind
 
@@ -307,13 +298,13 @@ def test_a_model_that_declares_no_energy_refuses_e0s():
     with pytest.raises(ValidationError, match="no energy for them to shift"):
         loaded(
             ResolvedConfig,
-            cli_overrides=[
-                "--model.model=an-architecture",
-                "--model.observables",
-                '["dipole"]',
-                "--data.heads",
-                json.dumps({"pbe": {"e0s": {"kind": "average"}}}),
-            ],
+            settings={
+                "model.model": "an-architecture",
+                "model.observables": ["dipole"],
+                "data.heads": json.loads(
+                    json.dumps({"pbe": {"e0s": {"kind": "average"}}})
+                ),
+            },
         )
 
 
@@ -321,13 +312,11 @@ def test_a_model_with_no_atomic_energies_is_fine_with_no_e0s_at_all():
     """The rule is about asking for them, not about the default being there."""
     config = loaded(
         ResolvedConfig,
-        cli_overrides=[
-            "--model.model=an-architecture",
-            "--model.observables",
-            '["dipole"]',
-            "--data.heads",
-            json.dumps({"pbe": {"train_file": "train.xyz"}}),
-        ],
+        settings={
+            "model.model": "an-architecture",
+            "model.observables": ["dipole"],
+            "data.heads": json.loads(json.dumps({"pbe": {"train_file": "train.xyz"}})),
+        },
     )
     assert config.data.heads["pbe"].e0s == E0sIsolatedAtoms()
 
@@ -336,11 +325,11 @@ def test_pseudolabels_cannot_be_generated_and_read_at_once():
     with pytest.raises(ValidationError, match="Set one"):
         loaded(
             ResolvedConfig,
-            cli_overrides=[
-                "--model.model=an-architecture",
-                "--finetune.pseudolabels.enabled=true",
-                "--finetune.pseudolabels.labels_from=/runs/a/labels.xyz",
-            ],
+            settings={
+                "model.model": "an-architecture",
+                "finetune.pseudolabels.enabled": "true",
+                "finetune.pseudolabels.labels_from": "/runs/a/labels.xyz",
+            },
         )
 
 
@@ -349,14 +338,12 @@ def test_lbfgs_refuses_an_ema():
     with pytest.raises(ValidationError, match="once per epoch"):
         loaded(
             ResolvedConfig,
-            cli_overrides=[
-                "--model.model=an-architecture",
-                "--training.optimizer",
-                '{"kind": "lbfgs"}',
-                "--training.scheduler.kind",
-                '{"kind": "constant"}',
-                "--training.ema.enabled=true",
-            ],
+            settings={
+                "model.model": "an-architecture",
+                "training.optimizer": {"kind": "lbfgs"},
+                "training.scheduler.kind": {"kind": "constant"},
+                "training.ema.enabled": "true",
+            },
         )
 
 
@@ -364,24 +351,21 @@ def test_lbfgs_refuses_a_plateau_schedule():
     with pytest.raises(ValidationError, match="plateau"):
         loaded(
             ResolvedConfig,
-            cli_overrides=[
-                "--model.model=an-architecture",
-                "--training.optimizer",
-                '{"kind": "lbfgs"}',
-            ],
+            settings={
+                "model.model": "an-architecture",
+                "training.optimizer": {"kind": "lbfgs"},
+            },
         )
 
 
 def test_lbfgs_is_accepted_with_a_schedule_that_does_not_watch_steps():
     config = loaded(
         ResolvedConfig,
-        cli_overrides=[
-            "--model.model=an-architecture",
-            "--training.optimizer",
-            '{"kind": "lbfgs"}',
-            "--training.scheduler.kind",
-            '{"kind": "constant"}',
-        ],
+        settings={
+            "model.model": "an-architecture",
+            "training.optimizer": {"kind": "lbfgs"},
+            "training.scheduler.kind": {"kind": "constant"},
+        },
     )
     assert isinstance(config.training.optimizer, LBFGSOptimizer)
     assert isinstance(config.training.scheduler.kind, ConstantSchedule)
@@ -392,14 +376,16 @@ def test_a_second_stage_running_lbfgs_is_checked_too():
     with pytest.raises(ValidationError, match=r"stage_two\.optimizer runs lbfgs"):
         loaded(
             ResolvedConfig,
-            cli_overrides=[
-                "--model.model=an-architecture",
-                "--training.ema.enabled=true",
-                "--training.scheduler.kind",
-                '{"kind": "constant"}',
-                "--training.stage_two",
-                '{"enabled": true, "start_epoch": 100, "optimizer": {"kind": "lbfgs"}}',
-            ],
+            settings={
+                "model.model": "an-architecture",
+                "training.ema.enabled": "true",
+                "training.scheduler.kind": {"kind": "constant"},
+                "training.stage_two": {
+                    "enabled": True,
+                    "start_epoch": 100,
+                    "optimizer": {"kind": "lbfgs"},
+                },
+            },
         )
 
 
@@ -412,12 +398,17 @@ def test_a_listed_stage_running_lbfgs_names_its_own_field_and_the_other():
     ):
         loaded(
             ResolvedConfig,
-            cli_overrides=[
-                "--model.model=an-architecture",
-                "--training.stages",
-                '[{"name": "main"}, {"name": "polish", "start_epoch": 5, '
-                '"optimizer": {"kind": "lbfgs"}}]',
-            ],
+            settings={
+                "model.model": "an-architecture",
+                "training.stages": [
+                    {"name": "main"},
+                    {
+                        "name": "polish",
+                        "start_epoch": 5,
+                        "optimizer": {"kind": "lbfgs"},
+                    },
+                ],
+            },
         )
 
 
@@ -431,15 +422,18 @@ def test_a_stage_that_keeps_running_lbfgs_is_checked_against_its_own_schedule():
     ):
         loaded(
             ResolvedConfig,
-            cli_overrides=[
-                "--model.model=an-architecture",
-                "--training.scheduler.kind",
-                '{"kind": "constant"}',
-                "--training.stages",
-                '[{"name": "main", "optimizer": {"kind": "lbfgs"}}, '
-                '{"name": "late", "start_epoch": 5, '
-                '"scheduler": {"kind": {"kind": "plateau"}}}]',
-            ],
+            settings={
+                "model.model": "an-architecture",
+                "training.scheduler.kind": {"kind": "constant"},
+                "training.stages": [
+                    {"name": "main", "optimizer": {"kind": "lbfgs"}},
+                    {
+                        "name": "late",
+                        "start_epoch": 5,
+                        "scheduler": {"kind": {"kind": "plateau"}},
+                    },
+                ],
+            },
         )
 
 
@@ -457,10 +451,10 @@ def test_a_second_stage_that_never_starts_is_refused():
     with pytest.raises(ValidationError, match="start"):
         loaded(
             ResolvedConfig,
-            cli_overrides=[
-                "--model.model=an-architecture",
-                "--training.stage_two.enabled=true",
-            ],
+            settings={
+                "model.model": "an-architecture",
+                "training.stage_two.enabled": "true",
+            },
         )
 
 
@@ -468,11 +462,10 @@ def test_a_second_stage_inherits_its_optimizer_by_naming_it():
     """`None` cannot say whether it means none of them or not written."""
     config = loaded(
         ResolvedConfig,
-        cli_overrides=[
-            "--model.model=an-architecture",
-            "--training.stage_two",
-            '{"enabled": true, "start_epoch": 100}',
-        ],
+        settings={
+            "model.model": "an-architecture",
+            "training.stage_two": {"enabled": True, "start_epoch": 100},
+        },
     )
     assert config.training.stage_two.optimizer.kind == "inherit"
 
@@ -481,14 +474,14 @@ def test_a_coherent_finetuning_configuration_is_accepted():
     """The guard against a suite that only ever asserts refusals."""
     config = loaded(
         ResolvedConfig,
-        cli_overrides=[
-            "--model.model=an-architecture",
-            "--finetune.foundation_model=medium",
-            "--data.heads",
-            json.dumps({"pbe": {"e0s": {"kind": "foundation", "head": "mp"}}}),
-            "--training.stage_two",
-            '{"enabled": true, "start_epoch": 1200}',
-        ],
+        settings={
+            "model.model": "an-architecture",
+            "finetune.foundation_model": "medium",
+            "data.heads": json.loads(
+                json.dumps({"pbe": {"e0s": {"kind": "foundation", "head": "mp"}}})
+            ),
+            "training.stage_two": {"enabled": True, "start_epoch": 1200},
+        },
     )
     assert config.data.heads["pbe"].e0s == E0sFromFoundation(head="mp")
     assert config.training.stage_two.start_epoch == 1200

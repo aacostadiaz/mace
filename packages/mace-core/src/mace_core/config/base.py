@@ -2,15 +2,15 @@
 
 `ReforgeBaseConfig.load(config_file)` reads one TOML, YAML or JSON file into a
 dict (`read_config_file`, public) and validates it once with pydantic
-(`from_dict`, public, for a caller that edits the dict first: `cli` does, for a
-command line). Everything the schema rejects, unknown keys included, is
-pydantic's `ValidationError` at its dotted location; `ConfigError` is raised
-only for a file that cannot be read or parsed. `to_resolved_dict` is the full
+(`from_dict`, public, for a caller that edits the dict first: `mace_core.cli`
+does, for a command line's flags). Everything the schema rejects, unknown keys
+included, is pydantic's `ValidationError` at its dotted location; `ConfigError`
+is raised only for a file that cannot be read or parsed. `to_resolved_dict` is the full
 JSON-native dump, itself a reloadable config file; `to_user_dict` holds only
 what was set. A kinds field (a discriminated union on `kind`) is an ordinary
 pydantic feature written in the tagged form, `loss: {kind: huber, delta: 0.1}`;
 nothing here knows about it. Nothing here knows about a command line either;
-the `--a.b value` grammar is `cli`'s.
+its flags are `mace_core.cli`'s.
 """
 
 import json
@@ -34,8 +34,8 @@ __all__ = ["ConfigError", "ConfigSection", "ReforgeBaseConfig", "read_config_fil
 
 
 class ConfigError(ValueError):
-    """A config file, or a command-line override (`cli`), that cannot be read or
-    parsed. Schema errors are pydantic's."""
+    """A config file that cannot be read or parsed, or a command-line flag that
+    cannot be written into one (`mace_core.cli`). Schema errors are pydantic's."""
 
 
 def read_config_file(path: str | os.PathLike[str]) -> dict[str, Any]:

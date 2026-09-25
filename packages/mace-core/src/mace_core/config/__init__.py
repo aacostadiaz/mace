@@ -10,7 +10,6 @@ from mace_core.config.base import (
     ReforgeBaseConfig,
     read_config_file,
 )
-from mace_core.config.cli import apply_overrides, parse_overrides
 from mace_core.config.data import DataConfig, GraphInputKeys, HeadDataConfig
 from mace_core.config.e0s import (
     E0sAverage,
@@ -74,9 +73,7 @@ __all__ = [
     "SolverKind",
     "StageTwoConfig",
     "TrainingConfig",
-    "apply_overrides",
     "e0_details",
     "from_namespace",
-    "parse_overrides",
     "read_config_file",
 ]
