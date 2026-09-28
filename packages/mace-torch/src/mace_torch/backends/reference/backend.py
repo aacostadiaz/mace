@@ -43,6 +43,7 @@ from mace_core.kernels.paths import channelwise_paths
 from mace_core.kernels.protocol import DISPATCHED_OPS, REFERENCE_ONLY_OPS
 from torch import Tensor, nn
 
+from mace_torch.backends.layout import Layout
 from mace_torch.backends.reference.spherical_harmonics import spherical_harmonics
 from mace_torch.kernels.ops import (
     channelwise_tp_conv,
@@ -51,7 +52,6 @@ from mace_torch.kernels.ops import (
     segment_sum,
     symmetric_contraction,
 )
-from mace_torch.nn.layout import channel_major, grouped, term_widths
 from mace_torch.nn.radial import (
     BesselBasis,
     ChebyshevBasis,
@@ -89,6 +89,15 @@ def _linear_plan(descriptor: LinearDescriptor):
         for out_slice, out_ir in target_irreps.slices():
             if out_ir.degree == 0 and out_ir.parity == 1:
                 bias_rows.append(out_slice.start)
+    # The entries above are canonical. In another layout the same map reads
+    # and writes other positions, so the tables are relabelled here, once,
+    # and the op costs the same in either.
+    layout = Layout(descriptor.layout)
+    to_out = layout.positions(descriptor.irreps_out)
+    to_in = layout.positions(descriptor.irreps_in)
+    rows = [int(to_out[row]) for row in rows]
+    columns = [int(to_in[column]) for column in columns]
+    bias_rows = [int(to_out[row]) for row in bias_rows]
     return rows, columns, sources, weight, bias_rows
 
 
@@ -285,7 +294,8 @@ class ReferenceSymmetricContraction(nn.Module):
             bases.append(_ConstantTensors(tables))
         self.weights = nn.ParameterList(weights)
         self.bases = nn.ModuleList(bases)
-        self.width_in = Irreps.parse(descriptor.irreps_in).dimension
+        self.in_terms = Layout.terms(descriptor.irreps_in)
+        self.out_terms = Layout.terms(descriptor.irreps_out)
 
     def initialize_weights(self, seed: int) -> None:
         """A standard normal, unscaled.
@@ -316,8 +326,9 @@ class ReferenceSymmetricContraction(nn.Module):
         channel-major order for it and back afterwards.
         """
         descriptor = self.descriptor
-        channels = channel_major(
-            features, term_widths(descriptor.irreps_in), descriptor.num_features
+        layout = Layout(descriptor.layout)
+        channels = layout.channel_major(
+            features, self.in_terms, descriptor.num_features
         )
         # `nn.ModuleList` erases what it holds, so the element type has to be
         # said here. It is the one thing put into `self.bases`, two lines of
@@ -327,7 +338,7 @@ class ReferenceSymmetricContraction(nn.Module):
         joined = symmetric_contraction(
             channels, self._all_weights(), tables, element, self.orders
         )
-        return grouped(joined, term_widths(descriptor.irreps_out))
+        return layout.grouped(joined, self.out_terms)
 
     def to_canonical(self) -> dict[str, Tensor]:
         """The flat ``[Z, A, mul]`` array, in the pinned path order.
@@ -435,7 +446,9 @@ class ReferenceChannelwiseTPConv(nn.Module):
             descriptor.irreps_node, descriptor.irreps_edge, descriptor.irreps_out
         )
         self.path_widths = [path.irrep.dimension for path in paths]
-        self.node_widths = term_widths(descriptor.irreps_node)
+        self.layout = Layout(descriptor.layout)
+        self.node_terms = Layout.terms(descriptor.irreps_node)
+        self.path_terms = tuple((1, width) for width in self.path_widths)
 
     @property
     def num_paths(self) -> int:
@@ -457,8 +470,8 @@ class ReferenceChannelwiseTPConv(nn.Module):
         put into channel-major order for it, and its channel-major result back
         into one block per path.
         """
-        channels = channel_major(
-            node_features, self.node_widths, self.descriptor.num_features
+        channels = self.layout.channel_major(
+            node_features, self.node_terms, self.descriptor.num_features
         )
         message = channelwise_tp_conv(
             channels,
@@ -470,7 +483,7 @@ class ReferenceChannelwiseTPConv(nn.Module):
             receiver,
             num_nodes,
         )
-        return grouped(message, self.path_widths)
+        return self.layout.grouped(message, self.path_terms)
 
 
 class ReferenceFullyConnectedTP(nn.Module):
@@ -505,6 +518,7 @@ class ReferenceFullyConnectedTP(nn.Module):
                 irreps_in=descriptor.irreps_in1,
                 irreps_out=descriptor.irreps_out,
                 precision=descriptor.precision,
+                layout=descriptor.layout,
             )
         )
         self.num_scalars = second.dimension
@@ -651,6 +665,7 @@ class ReferenceBackend:
             dtypes=frozenset({"float64", "float32"}),
             max_lmax=0,
             layouts=frozenset({"mul_ir"}),
+            activation_layouts=frozenset({"mul_ir", "ir_mul"}),
             bases=frozenset({"reduced", "full"}),
             supports_double_backward=True,
         )

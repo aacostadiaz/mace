@@ -169,11 +169,12 @@ def test_the_conv_descriptor_carries_the_channel_count():
 
 
 def test_no_model_code_permutes_the_layout():
-    """Every op reads and writes one layout, so nothing between the ops
-    regroups features. The reference regroups inside its own kernels, which is
-    where the permutations are allowed to live."""
+    """Every op reads and writes the chain's layout, so nothing between the ops
+    regroups features, and model code never picks a layout: it asks the backend
+    for one with `layout_of`. Building a `Layout` by name, or permuting axes,
+    is what the backends do inside their ops."""
     root = Path(__file__).resolve().parents[1] / "src" / "mace_torch"
-    permutations = {"channel_major", "grouped"}
+    permutations = {"Layout", "CANONICAL"}
     offenders = []
     for folder in ("nn", "models"):
         for path in (root / folder).rglob("*.py"):
@@ -184,7 +185,7 @@ def test_no_model_code_permutes_the_layout():
                 if isinstance(node, ast.ImportFrom) and any(
                     alias.name in permutations for alias in node.names
                 ):
-                    offenders.append(f"{path.name} imports a layout permutation")
+                    offenders.append(f"{path.name} builds its own layout")
                 if isinstance(node, ast.Attribute) and node.attr in (
                     "permute",
                     "movedim",

@@ -5,15 +5,15 @@ fused convolution, the symmetric contraction and the skip connection. Every
 other op, and every shape declined here, is built by the reference through
 :class:`~mace_torch.backends.composite.CompositeBackend`.
 
-**The layout is the chain's.** Each op is built with ``cue.mul_ir``, the
-grouped layout every other op reads and writes, so nothing in the model
-permutes around it. cuEquivariance's native layout is ``ir_mul``, and in
-``mul_ir`` its ops transpose inside themselves. Measured on an A100 in float32
-at 128 channels, 864 atoms and 76768 edges, ``mul_ir`` against ``ir_mul``: the
-convolution 1.49 against 1.27 ms, the linear map 2.63 against 2.01 ms, the
-contraction 5.34 against 4.65 ms. Moving the whole chain to ``ir_mul`` is a
-change to every op and the reference, and is left for when that difference is
-worth it.
+**The layout is the chain's.** Each op is built in the descriptor's layout,
+which is ``ir_mul``, cuEquivariance's native one, whenever cueq is the chosen
+backend: the composite resolves the chain to it and the reference follows.
+Built in ``mul_ir`` instead, its ops transpose inside themselves; measured on an
+A100 at 1728 atoms and 128 channels, forward and backward in float64, the
+linear map takes 3.27 ms in ``mul_ir`` and 1.22 in ``ir_mul``. In ``ir_mul``
+the linear map and the skip use cuEquivariance's ``naive`` method, which is
+what the frozen tree uses and what measured fastest there: the skip 1.91 ms
+against 3.12 with the default method, in float64.
 
 **The weights are the canonical ones, mapped once.** Each op holds its
 weights in cuEquivariance's own order and maps them to and from the canonical
@@ -99,6 +99,17 @@ def _irreps(text: str) -> cue.Irreps:
 def _uniform(irreps: str) -> bool:
     """One copy of every term per channel, which is what the kernels need."""
     return all(multiplicity == 1 for multiplicity, _ in Irreps.parse(irreps).terms)
+
+
+def _layout(descriptor: Descriptor) -> Any:
+    """cuEquivariance's name for the descriptor's feature layout."""
+    return getattr(cue, descriptor.layout)
+
+
+def _method(descriptor: Descriptor) -> str | None:
+    """``naive`` in ``ir_mul``, the default otherwise: what measured fastest
+    for the linear map and the skip in each, see the module docstring."""
+    return "naive" if descriptor.layout == "ir_mul" else None
 
 
 class CuEqCapabilities(BackendCapabilities):
@@ -209,7 +220,8 @@ class CuEqLinear(_PermutedWeights):
         operation = cuet.Linear(
             _irreps(descriptor.irreps_in),
             _irreps(descriptor.irreps_out),
-            layout=cue.mul_ir,
+            layout=_layout(descriptor),
+            method=_method(descriptor),
             shared_weights=True,
             internal_weights=True,
             dtype=dtype,
@@ -242,7 +254,8 @@ class CuEqFullyConnectedTP(_PermutedWeights):
             _irreps(descriptor.irreps_in1),
             _irreps(descriptor.irreps_in2),
             _irreps(descriptor.irreps_out),
-            layout=cue.mul_ir,
+            layout=_layout(descriptor),
+            method=_method(descriptor),
             shared_weights=True,
             internal_weights=True,
             dtype=dtype,
@@ -278,7 +291,7 @@ class CuEqChannelwiseTPConv(nn.Module):
             _irreps(expanded_irreps(descriptor.irreps_node, descriptor.num_features)),
             _irreps(descriptor.irreps_edge),
             [ir for _, ir in _irreps(descriptor.irreps_out)],
-            layout=cue.mul_ir,
+            layout=_layout(descriptor),
             shared_weights=False,
             internal_weights=False,
             dtype=dtype,
@@ -412,7 +425,7 @@ class CuEqSymmetricContraction(nn.Module):
             _irreps(expanded_irreps(descriptor.irreps_out, features)),
             descriptor.correlation,
             descriptor.num_elements,
-            layout=cue.mul_ir,
+            layout=_layout(descriptor),
             dtype=dtype,
             math_dtype=dtype,
             original_mace=False,
@@ -481,7 +494,9 @@ class CuEqBackend:
             # anywhere and is what a CPU host gets.
             devices=frozenset({"cuda"} if self.compiled else {"cpu"}),
             dtypes=frozenset({"float64", "float32"}),
-            layouts=frozenset({"mul_ir", "ir_mul"}),
+            layouts=frozenset({"mul_ir"}),
+            activation_layouts=frozenset({"mul_ir", "ir_mul"}),
+            native_layout="ir_mul",
             bases=frozenset({"reduced"}),
             supports_double_backward=True,
         )

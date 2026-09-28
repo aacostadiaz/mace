@@ -22,7 +22,15 @@ from mace_core.kernels.precision import Precision
 #: what leaves a wrong value unnoticed until the descriptor rejects it.
 RadialKind = Literal["bessel", "gaussian", "chebyshev"]
 
+#: How the values of one irrep term sit in a flat feature vector. ``mul_ir``
+#: puts the copies outermost, ``[mul, 2l + 1]``; ``ir_mul`` puts the components
+#: outermost, ``[2l + 1, mul]``. The two coincide for scalars and for any term
+#: with one copy. ``mul_ir`` is the canonical one, the layout checkpoints and
+#: everything handed to a user are in.
+ActivationLayout = Literal["mul_ir", "ir_mul"]
+
 __all__ = [
+    "ActivationLayout",
     "ChannelwiseTPConvDescriptor",
     "Descriptor",
     "FullyConnectedTPDescriptor",
@@ -41,9 +49,16 @@ class Descriptor:
 
     Attributes:
         precision: The dtype the op computes in, by name.
+        layout: How the op's input and output features are laid out within
+            each irrep term. Chosen once for the whole chain of ops when the
+            backend is resolved, as the accelerated backend's native layout,
+            and stamped on every descriptor it builds; model code never sets
+            it. The weights are not affected: they are canonical whatever the
+            layout.
     """
 
     precision: Precision = "float64"
+    layout: ActivationLayout = "mul_ir"
 
     @property
     def weight_numel(self) -> int:
@@ -113,9 +128,9 @@ class ChannelwiseTPConvDescriptor(Descriptor):
     the six ``hasattr(self, "conv_fusion")`` branches the frozen tree carries
     through its interaction blocks.
 
-    **Its values are grouped by irrep, channels inside each irrep** (``mul_ir``
-    over the expanded declaration), which is the layout every other op in the
-    chain reads and writes. The node features are ``[n_nodes, C * dim_node]``
+    **Its values are grouped by irrep**, one block per term of the expanded
+    declaration, laid out within the block as :attr:`Descriptor.layout` says,
+    like every other op in the chain. The node features are ``[n_nodes, C * dim_node]``
     over ``C`` copies of each term of ``irreps_node``; the result is
     ``[n_nodes, C * dim_paths]``, one block of ``C`` channels per path in the
     order :func:`~mace_core.kernels.paths.channelwise_paths` pins; the radial
@@ -139,7 +154,7 @@ class ChannelwiseTPConvDescriptor(Descriptor):
 class SymmetricContractionDescriptor(Descriptor):
     """The many-body contraction over the reduced Clebsch-Gordan basis.
 
-    Its values are grouped by irrep, channels inside each irrep, like the
+    Its values are grouped by irrep, in the descriptor's layout, like the
     convolution's: ``[n_nodes, C * dim_in]`` in and ``[n_nodes, C * dim_out]``
     out, over ``C`` copies of each term of the declarations.
 

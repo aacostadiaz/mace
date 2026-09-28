@@ -19,14 +19,22 @@ from mace_torch.data.batch import GraphDataset
 from mace_torch.train.model_stage import build_model
 
 
-def engine(backend: str, seed: int = 3, device: str = "cpu"):
+def engine(
+    backend: str,
+    seed: int = 3,
+    device: str = "cpu",
+    heads: tuple[str, ...] = ("a",),
+    readout: dict | None = None,
+    observables: tuple[str, ...] = ("energy", "forces", "stress"),
+):
     config = ResolvedConfig.model_validate(
         {
             "runtime": {"seed": seed},
-            "data": {"heads": {"a": {"train_file": "x.xyz"}}},
+            "data": {"heads": {name: {"train_file": "x.xyz"} for name in heads}},
             "model": {
                 "backend": backend,
-                "observables": ["energy", "forces", "stress"],
+                "observables": list(observables),
+                **({"readout": readout} if readout else {}),
                 "r_max": 3.0,
                 "num_channels": 4,
                 "max_ell": 2,
@@ -40,8 +48,8 @@ def engine(backend: str, seed: int = 3, device: str = "cpu"):
         config,
         DEFAULT_CATALOGUE,
         z_table=AtomicNumberTable([6, 14]),
-        heads=("a",),
-        e0s=ResolvedE0s({"a": {6: -1.0, 14: -2.0}}),
+        heads=heads,
+        e0s=ResolvedE0s({name: {6: -1.0, 14: -2.0} for name in heads}),
         statistics=DatasetStatistics(avg_num_neighbors=8.0, std=1.0),
     )
     return built.to(device)

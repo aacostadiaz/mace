@@ -20,7 +20,7 @@ from mace_core.clebsch_gordan.irreps import Irreps
 from mace_core.kernels.descriptors import FullyConnectedTPDescriptor
 from mace_torch.backends.reference import ReferenceBackend
 from mace_torch.backends.reference.backend import ReferenceFullyConnectedTP
-from mace_torch.nn.layout import grouped, term_widths
+from mace_torch.backends.layout import CANONICAL
 from mace_torch.nn.product_basis import EquivariantProductBasisBlock
 
 from tests.parity.fm00_convert import (
@@ -153,7 +153,7 @@ def test_a_whole_product_block_converts_exactly(fp64, anchor, index):
     element = torch.full((5,), 1, dtype=torch.long)
 
     theirs = legacy(features, None, attributes).detach()
-    flat = grouped(features, term_widths(CHANNEL_IN))
+    flat = CANONICAL.grouped(features, CANONICAL.terms(CHANNEL_IN))
     ours = mine(flat, element, None).detach()
 
     assert float(theirs.abs().max()) > 1e-3, "the trained product maps to nothing"

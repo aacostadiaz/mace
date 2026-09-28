@@ -47,7 +47,7 @@ CLUSTER = np.array(
 )
 
 
-def engine(one_body: int = 6, seed: int = 3) -> DerivativeEngine:
+def engine(one_body: int = 6, seed: int = 3, backend=None) -> DerivativeEngine:
     head = EnergyOutputHead(
         ResolvedE0s({"default": {8: -4.25, 26: -6.75}}),
         ["default"],
@@ -56,7 +56,7 @@ def engine(one_body: int = 6, seed: int = 3) -> DerivativeEngine:
         PrecisionConfig(),
     )
     model = MagneticModel(
-        ReferenceBackend(),
+        backend or ReferenceBackend(),
         atomic_numbers=NUMBERS,
         observables=[ENERGY],
         energy_head=head,

@@ -9,10 +9,13 @@ here, once, at build time, from the backend's own answer to
 convert, fail and reconvert (``mace/calculators/mace_torchsim.py:123-137``) has
 no counterpart.
 
-Every op takes and returns the same layout, grouped by irrep with the channels
-inside, whichever backend built it. A backend arranges its values however its
-kernel wants inside the op. So a fallback puts no permute between two ops, and
-there is no layout seam to count.
+The whole chain of ops runs in one feature layout, decided here once: the
+chosen backend's native layout when the reference can follow it, which it
+always can, and the canonical one otherwise. Every descriptor built through the
+pair is stamped with it, so an op the chosen backend declines is built by the
+reference in the same layout, a fallback puts no permute between two ops, and
+there is no seam to count. The model is handed the layout as :attr:`layout`
+and never branches on it.
 
 What was built where is recorded in :attr:`CompositeBackend.decisions` and
 summarised by :meth:`CompositeBackend.report`, which the model stage logs. An
@@ -25,13 +28,14 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from mace_core.kernels.capabilities import BackendCapabilities
 from mace_core.kernels.protocol import REFERENCE_ONLY_OPS
 from mace_core.kernels.registry import get_backend
 
+from mace_torch.backends.layout import CANONICAL, Layout
 from mace_torch.backends.reference import ReferenceBackend
 
 __all__ = [
@@ -75,6 +79,10 @@ class CompositeBackend:
         self.name = primary.name
         self._primary_capabilities: BackendCapabilities = primary.capabilities()
         self.decisions: list[BuildDecision] = []
+        native = self._primary_capabilities.native_layout
+        follows = native in fallback.capabilities().activation_layouts
+        #: The feature layout every op of the chain is built in.
+        self.layout: Layout = Layout(native) if follows else CANONICAL
 
     def capabilities(self) -> BackendCapabilities:
         """What the pair can build: everything the reference can.
@@ -90,12 +98,15 @@ class CompositeBackend:
             dtypes=fallback.dtypes,
             max_lmax=fallback.max_lmax,
             layouts=fallback.layouts,
+            activation_layouts=frozenset({self.layout.name}),
+            native_layout=self.layout.name,
             bases=fallback.bases,
             supports_double_backward=primary.supports_double_backward
             and fallback.supports_double_backward,
         )
 
     def _build(self, op: str, descriptor: Any) -> Any:
+        descriptor = replace(descriptor, layout=self.layout.name)
         capabilities = self._primary_capabilities
         if op not in capabilities.ops:
             reason = f"{self.primary.name} does not implement {op}"
@@ -149,7 +160,7 @@ class CompositeBackend:
                 reasons.setdefault(decision.op, set()).add(decision.reason)
         lines = [
             f"backend {self.primary.name}, with {self.fallback.name} for the ops "
-            f"it does not build; one layout throughout, so no seams"
+            f"it does not build; every op in {self.layout.name}, so no seams"
         ]
         for op in sorted({d.op for d in self.decisions}):
             built = ", ".join(

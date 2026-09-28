@@ -34,7 +34,7 @@ them. A change to them is its own reviewed change.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -52,8 +52,9 @@ from mace_core.kernels.descriptors import (
 from mace_core.kernels.paths import channelwise_paths
 from mace_core.kernels.precision import Precision
 from mace_core.kernels.protocol import InternalWeights
-from torch import Tensor
+from torch import Tensor, nn
 
+from mace_torch.backends.layout import Layout, Terms
 from mace_torch.backends.reference import ReferenceBackend
 from mace_torch.nn.layout import expanded_irreps
 
@@ -268,6 +269,60 @@ def _inputs(descriptor: Any, dtype: torch.dtype, device: str, seed: int) -> _Inp
     raise TypeError(f"no conformance inputs for {type(descriptor).__name__}")
 
 
+def _layout_terms(descriptor: Any) -> tuple[dict[int, Terms], Terms]:
+    """Which arguments of an op carry features, and the terms of each and of
+    the output, so that a value can be moved between layouts."""
+    terms = Layout.terms
+    if isinstance(descriptor, LinearDescriptor):
+        return {0: terms(descriptor.irreps_in)}, terms(descriptor.irreps_out)
+    if isinstance(descriptor, ChannelwiseTPConvDescriptor):
+        features = descriptor.num_features
+        paths = channelwise_paths(
+            descriptor.irreps_node, descriptor.irreps_edge, descriptor.irreps_out
+        )
+        node = terms(expanded_irreps(descriptor.irreps_node, features))
+        edge = terms(descriptor.irreps_edge)
+        return {0: node, 1: edge}, tuple(
+            (features, path.irrep.dimension) for path in paths
+        )
+    if isinstance(descriptor, SymmetricContractionDescriptor):
+        features = descriptor.num_features
+        return (
+            {0: terms(expanded_irreps(descriptor.irreps_in, features))},
+            terms(expanded_irreps(descriptor.irreps_out, features)),
+        )
+    if isinstance(descriptor, FullyConnectedTPDescriptor):
+        return (
+            {0: terms(descriptor.irreps_in1), 1: terms(descriptor.irreps_in2)},
+            terms(descriptor.irreps_out),
+        )
+    return {}, ()
+
+
+class _InLayout(nn.Module):
+    """An op built in another layout, fed and read in the canonical one.
+
+    What lets every check compare it with the reference in ``mul_ir``: the
+    inputs are moved into the op's layout and its output back, so a value, a
+    gradient or a rotation that disagrees is the op's and not the layout's.
+    """
+
+    def __init__(self, op: Any, descriptor: Any) -> None:
+        super().__init__()
+        self.op = op
+        self.layout = Layout(descriptor.layout)
+        self.inputs, self.output = _layout_terms(descriptor)
+
+    def forward(self, *arguments: Any) -> Tensor:
+        moved = [
+            self.layout.from_canonical(value, self.inputs[index])
+            if index in self.inputs
+            else value
+            for index, value in enumerate(arguments)
+        ]
+        return self.layout.to_canonical(self.op(*moved), self.output)
+
+
 def _canonical_to(state: Any, like: Tensor) -> Any:
     if isinstance(state, Tensor):
         return (
@@ -303,6 +358,7 @@ def run_backend_conformance(
     seed: int = 0,
     compile_ops: bool = False,
     cuda_graphs: bool = False,
+    layout: str = "mul_ir",
 ) -> list[ConformanceResult]:
     """Check every case against the reference. Raises on the first failure.
 
@@ -314,6 +370,9 @@ def run_backend_conformance(
         seed: For the weights, the inputs and the rotation.
         compile_ops: Also compile each op with ``fullgraph=True``.
         cuda_graphs: Also capture each op in a CUDA graph and replay it.
+        layout: The feature layout every case is built in. The op is fed and
+            read through the canonical layout, so it is held to the same
+            reference whatever its own.
 
     Returns:
         One result per case, including the declined ones.
@@ -325,7 +384,8 @@ def run_backend_conformance(
     reference = ReferenceBackend()
     capabilities = backend.capabilities()
     results = []
-    for number, descriptor in enumerate(cases or conformance_cases(precision)):
+    given = cases or conformance_cases(precision)
+    for number, descriptor in enumerate(replace(case, layout=layout) for case in given):
         op = _OPS[type(descriptor)]
         make = getattr(backend, f"make_{op}", None)
         if op not in capabilities.ops or not capabilities.supports(descriptor):
@@ -348,7 +408,11 @@ def run_backend_conformance(
         result = ConformanceResult(op, descriptor, True)
         where = f"{backend.name} {op} {descriptor}"
         candidate = make(descriptor).to(device)
-        expected_op = getattr(reference, f"make_{op}")(descriptor).to(device)
+        canonical = replace(descriptor, layout="mul_ir")
+        expected_op = getattr(reference, f"make_{op}")(canonical).to(device)
+        # What every forward check calls: the op itself, or the op seen
+        # through the canonical layout when it was built in another.
+        runner = candidate if layout == "mul_ir" else _InLayout(candidate, descriptor)
 
         if isinstance(expected_op, InternalWeights):
             if not isinstance(candidate, InternalWeights):
@@ -395,7 +459,7 @@ def run_backend_conformance(
             else value
             for index, value in enumerate(inputs.arguments)
         ]
-        mine = candidate(*mine_arguments)
+        mine = runner(*mine_arguments)
         theirs = expected_op(*their_arguments)
         _close(mine, theirs, precision, f"{where} values")
         result.checks.append("values")
@@ -424,7 +488,7 @@ def run_backend_conformance(
             rotation = _rotation(seed + number)
             moved, output_rotation = inputs.rotate(rotation)
             with torch.no_grad():
-                rotated_output = candidate(
+                rotated_output = runner(
                     *[
                         value.detach() if isinstance(value, Tensor) else value
                         for value in moved
@@ -443,7 +507,7 @@ def run_backend_conformance(
                 for i in inputs.differentiable
             ]
 
-            def function(*leaves, op=candidate, given=inputs):
+            def function(*leaves, op=runner, given=inputs):
                 arguments = list(given.arguments)
                 for index, leaf in zip(given.differentiable, leaves, strict=True):
                     arguments[index] = leaf
@@ -459,18 +523,18 @@ def run_backend_conformance(
             for value in inputs.arguments
         ]
         if isinstance(descriptor, ChannelwiseTPConvDescriptor):
-            _check_no_edges(candidate, detached, theirs.shape[1], where)
+            _check_no_edges(runner, detached, theirs.shape[1], where)
             result.checks.append("no edges")
         if compile_ops:
             torch._dynamo.reset()
-            compiled = torch.compile(candidate, fullgraph=True, dynamic=False)
+            compiled = torch.compile(runner, fullgraph=True, dynamic=False)
             with torch.no_grad():
                 _close(
                     compiled(*detached), mine.detach(), precision, f"{where} compiled"
                 )
             result.checks.append("compiles")
         if cuda_graphs:
-            _check_cuda_graph(candidate, detached, mine.detach(), precision, where)
+            _check_cuda_graph(runner, detached, mine.detach(), precision, where)
             result.checks.append("cuda graph")
         if isinstance(candidate, InternalWeights) and any(
             p.requires_grad for p in candidate.parameters()

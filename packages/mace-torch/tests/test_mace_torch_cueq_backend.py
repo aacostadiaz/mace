@@ -42,10 +42,15 @@ if DEVICES == ["cuda"] and not torch.cuda.is_available():
     pytest.skip("the compiled operations need a GPU", allow_module_level=True)
 
 
+@pytest.mark.parametrize("layout", ["ir_mul", "mul_ir"])
 @pytest.mark.parametrize("device", DEVICES)
-def test_cueq_passes_the_conformance_harness(dtype, device):
+def test_cueq_passes_the_conformance_harness(dtype, device, layout):
+    """In its native layout, which is what a model on cueq is built in, and in
+    the canonical one it also declares."""
     precision = "float64" if dtype == torch.float64 else "float32"
-    results = run_backend_conformance(CuEqBackend(), precision=precision, device=device)
+    results = run_backend_conformance(
+        CuEqBackend(), precision=precision, device=device, layout=layout
+    )
     built = {result.op for result in results if result.built}
     assert built == {
         "linear",
@@ -121,6 +126,7 @@ def test_the_model_on_cueq_is_the_reference_model(caplog, device):
     caplog.set_level("INFO", logger="mace_torch.train.model_stage")
     accelerated = engine("cueq", device=device)
     assert "channelwise_tp_conv: 2 by cueq" in caplog.text
+    assert "every op in ir_mul" in caplog.text
     load_canonical_state(accelerated, canonical_state(reference))
 
     expected = reference(graph(device), compute=("forces", "stress"), training=False)
@@ -202,6 +208,7 @@ def test_cueq_ops_compile_whole_and_replay_from_a_cuda_graph(dtype):
         device="cuda",
         compile_ops=True,
         cuda_graphs=True,
+        layout="ir_mul",
     )
     for result in results:
         if result.built:

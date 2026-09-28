@@ -21,6 +21,7 @@ from mace_core.kernels.precision import Precision
 from mace_core.observables import InputSpec
 from torch import Tensor, nn
 
+from mace_torch.backends.layout import layout_of
 from mace_torch.nn.layout import expanded_irreps
 
 __all__ = ["NodeInputEmbedding"]
@@ -62,6 +63,10 @@ class NodeInputEmbedding(nn.Module):
                 f"by the graph-feature embedding."
             )
         self.specs = list(specs)
+        # A stream arrives canonical, as the data is written, and the maps
+        # read the backend's layout.
+        self.layout = layout_of(backend)
+        self.stream_terms = [self.layout.terms(spec.irreps) for spec in self.specs]
         grouped = expanded_irreps(hidden_irreps, num_features)
         self.maps = nn.ModuleDict(
             {
@@ -81,10 +86,11 @@ class NodeInputEmbedding(nn.Module):
 
         Args:
             graph: The flat dict, read only.
-            features: ``[n_atoms, width]``, flat and grouped by irrep.
+            features: ``[n_atoms, width]``, flat and grouped by irrep, in the
+                backend's layout.
         """
         total = None
-        for spec in self.specs:
+        for spec, terms in zip(self.specs, self.stream_terms, strict=True):
             if spec.name not in graph:
                 raise KeyError(
                     f"the node input {spec.name!r} is declared but the graph "
@@ -93,7 +99,10 @@ class NodeInputEmbedding(nn.Module):
                     f"value of all zeros is a present input whose value is "
                     f"zero."
                 )
-            mapped = self.maps[spec.name](graph[spec.name].to(features.dtype))
+            stream = self.layout.from_canonical(
+                graph[spec.name].to(features.dtype), terms
+            )
+            mapped = self.maps[spec.name](stream)
             total = mapped if total is None else total + mapped
         assert total is not None
         return features + total

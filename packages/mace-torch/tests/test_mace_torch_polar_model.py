@@ -39,7 +39,7 @@ WITH_STRESS = ENERGY.model_copy(
 )
 
 
-def build_model(profile="molecular", steps=2, **overrides) -> PolarModel:
+def build_model(profile="molecular", steps=2, backend=None, **overrides) -> PolarModel:
     head = EnergyOutputHead(
         ResolvedE0s({"default": {1: -13.6, 8: -2040.0}}),
         ["default"],
@@ -48,7 +48,7 @@ def build_model(profile="molecular", steps=2, **overrides) -> PolarModel:
         PrecisionConfig(model="float64"),
     )
     model = PolarModel(
-        ReferenceBackend(),
+        backend or ReferenceBackend(),
         atomic_numbers=[1, 8],
         observables=[WITH_STRESS],
         energy_head=head,
