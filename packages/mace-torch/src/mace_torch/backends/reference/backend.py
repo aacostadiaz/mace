@@ -43,10 +43,12 @@ from mace_core.kernels.paths import channelwise_paths
 from mace_core.kernels.protocol import DISPATCHED_OPS, REFERENCE_ONLY_OPS
 from torch import Tensor, nn
 
+from mace_torch.backends.layout import Layout
 from mace_torch.backends.reference.spherical_harmonics import spherical_harmonics
 from mace_torch.kernels.ops import (
     channelwise_tp_conv,
     equivariant_linear,
+    monomial_basis,
     segment_sum,
     symmetric_contraction,
 )
@@ -87,6 +89,15 @@ def _linear_plan(descriptor: LinearDescriptor):
         for out_slice, out_ir in target_irreps.slices():
             if out_ir.degree == 0 and out_ir.parity == 1:
                 bias_rows.append(out_slice.start)
+    # The entries above are canonical. In another layout the same map reads
+    # and writes other positions, so the tables are relabelled here, once,
+    # and the op costs the same in either.
+    layout = Layout(descriptor.layout)
+    to_out = layout.positions(descriptor.irreps_out)
+    to_in = layout.positions(descriptor.irreps_in)
+    rows = [int(to_out[row]) for row in rows]
+    columns = [int(to_in[column]) for column in columns]
+    bias_rows = [int(to_out[row]) for row in bias_rows]
     return rows, columns, sources, weight, bias_rows
 
 
@@ -234,11 +245,10 @@ class _ConstantTensors(nn.Module):
 class ReferenceSymmetricContraction(nn.Module):
     """The many-body contraction, over the basis the descriptor records.
 
-    One contraction per output irrep, concatenated on the component axis. They
-    cannot share a stacked basis: each output irrep has its own component count,
-    so stacking them would be joining arrays whose second axis differs. The
-    frozen tree reaches the same shape by holding one `Contraction` per output
-    irrep, and this is that, with the loop kept explicit.
+    One basis per output irrep and body order, each rewritten over the input's
+    symmetric monomials. The kernel takes them all in one call, so the monomials
+    are formed once and shared by every output irrep, and the results are
+    concatenated on the component axis.
     """
 
     def __init__(self, descriptor: SymmetricContractionDescriptor) -> None:
@@ -263,7 +273,13 @@ class ReferenceSymmetricContraction(nn.Module):
                 # array. A `2e` output is exactly that at body order one.
                 trailing = int(np.prod(array.shape[2:])) if array.ndim > 2 else 1
                 flat = array.reshape(array.shape[0], array.shape[1], trailing)
-                tables.append(torch.tensor(flat, dtype=dtype))
+                # Rewritten over the input's symmetric monomials in fp64 and
+                # only then cast, so the symmetrization rounds once.
+                tables.append(
+                    monomial_basis(torch.tensor(flat, dtype=torch.float64), order).to(
+                        dtype
+                    )
+                )
                 group.append(
                     nn.Parameter(
                         torch.zeros(
@@ -278,6 +294,8 @@ class ReferenceSymmetricContraction(nn.Module):
             bases.append(_ConstantTensors(tables))
         self.weights = nn.ParameterList(weights)
         self.bases = nn.ModuleList(bases)
+        self.in_terms = Layout.terms(descriptor.irreps_in)
+        self.out_terms = Layout.terms(descriptor.irreps_out)
 
     def initialize_weights(self, seed: int) -> None:
         """A standard normal, unscaled.
@@ -291,29 +309,36 @@ class ReferenceSymmetricContraction(nn.Module):
             for position, parameter in enumerate(self.weights):
                 parameter.copy_(_draw(parameter, seed + position))
 
-    def _group(self, position: int) -> list[Tensor]:
-        """One output irrep's weights, by integer index.
+    def _all_weights(self) -> list[Tensor]:
+        """The weights, output irrep outermost, by integer index.
 
-        Flat storage with integer indexing rather than a slice of the
-        `ParameterList`: slicing one goes through `slice.indices`, a C builtin
-        that `torch.compile` cannot trace, and the break lands in the middle of
-        the backbone rather than here.
+        Integer indexing rather than iterating or slicing the `ParameterList`:
+        slicing one goes through `slice.indices`, a C builtin that
+        `torch.compile` cannot trace, and the break lands in the middle of the
+        backbone rather than here.
         """
-        base = position * self.orders
-        return [self.weights[base + order] for order in range(self.orders)]
+        return [self.weights[position] for position in range(len(self.weights))]
 
     def forward(self, features: Tensor, element: Tensor) -> Tensor:
+        """``[n_nodes, C * dim_in]`` in, ``[n_nodes, C * dim_out]`` out.
+
+        The kernel works channel by channel, so the grouped values are put into
+        channel-major order for it and back afterwards.
+        """
+        descriptor = self.descriptor
+        layout = Layout(descriptor.layout)
+        channels = layout.channel_major(
+            features, self.in_terms, descriptor.num_features
+        )
         # `nn.ModuleList` erases what it holds, so the element type has to be
         # said here. It is the one thing put into `self.bases`, two lines of
         # the constructor away.
         bases = cast("list[_ConstantTensors]", list(self.bases))
-        pieces = [
-            symmetric_contraction(
-                features, self._group(position), list(tables), element
-            )
-            for position, tables in enumerate(bases)
-        ]
-        return torch.cat(pieces, dim=-1)
+        tables = [table for group in bases for table in group]
+        joined = symmetric_contraction(
+            channels, self._all_weights(), tables, element, self.orders
+        )
+        return layout.grouped(joined, self.out_terms)
 
     def to_canonical(self) -> dict[str, Tensor]:
         """The flat ``[Z, A, mul]`` array, in the pinned path order.
@@ -411,15 +436,24 @@ class ReferenceChannelwiseTPConv(nn.Module):
         super().__init__()
         self.descriptor = descriptor
         dtype = _TORCH_DTYPE[descriptor.precision]
-        coefficients = _coupling_coefficients(descriptor)
+        # Every path owns its own block of output components, so the paths'
+        # coefficients sum into one array without overlapping.
+        coefficients = _coupling_coefficients(descriptor).sum(axis=0)
         self.register_buffer(
             "coefficients", torch.tensor(coefficients, dtype=dtype), persistent=False
         )
+        paths = channelwise_paths(
+            descriptor.irreps_node, descriptor.irreps_edge, descriptor.irreps_out
+        )
+        self.path_widths = [path.irrep.dimension for path in paths]
+        self.layout = Layout(descriptor.layout)
+        self.node_terms = Layout.terms(descriptor.irreps_node)
+        self.path_terms = tuple((1, width) for width in self.path_widths)
 
     @property
     def num_paths(self) -> int:
         """How many weights the external radial MLP has to produce."""
-        return int(self.coefficients.shape[0])
+        return len(self.path_widths)
 
     def forward(
         self,
@@ -430,15 +464,26 @@ class ReferenceChannelwiseTPConv(nn.Module):
         receiver: Tensor,
         num_nodes: int,
     ) -> Tensor:
-        return channelwise_tp_conv(
-            node_features,
+        """Grouped node features in, one grouped block per path out.
+
+        The kernel works channel by channel, so the grouped node features are
+        put into channel-major order for it, and its channel-major result back
+        into one block per path.
+        """
+        channels = self.layout.channel_major(
+            node_features, self.node_terms, self.descriptor.num_features
+        )
+        message = channelwise_tp_conv(
+            channels,
             edge_attributes,
             radial_weights,
             self.coefficients,
+            self.path_widths,
             sender,
             receiver,
             num_nodes,
         )
+        return self.layout.grouped(message, self.path_terms)
 
 
 class ReferenceFullyConnectedTP(nn.Module):
@@ -473,6 +518,7 @@ class ReferenceFullyConnectedTP(nn.Module):
                 irreps_in=descriptor.irreps_in1,
                 irreps_out=descriptor.irreps_out,
                 precision=descriptor.precision,
+                layout=descriptor.layout,
             )
         )
         self.num_scalars = second.dimension
@@ -619,6 +665,7 @@ class ReferenceBackend:
             dtypes=frozenset({"float64", "float32"}),
             max_lmax=0,
             layouts=frozenset({"mul_ir"}),
+            activation_layouts=frozenset({"mul_ir", "ir_mul"}),
             bases=frozenset({"reduced", "full"}),
             supports_double_backward=True,
         )

@@ -133,7 +133,10 @@ def chain(backend):
     )
     convolution = backend.make_channelwise_tp_conv(
         ChannelwiseTPConvDescriptor(
-            irreps_node="0e+1o", irreps_edge="0e+1o", irreps_out="0e+1o"
+            irreps_node="0e+1o",
+            irreps_edge="0e+1o",
+            irreps_out="0e+1o",
+            num_features=2,
         )
     )
     # The convolution emits one block per coupling path, keeping two couplings
@@ -142,8 +145,8 @@ def chain(backend):
     paths = channelwise_paths("0e+1o", "0e+1o", "0e+1o")
     down = backend.make_linear(
         LinearDescriptor(
-            irreps_in="+".join(str(path.irrep) for path in paths),
-            irreps_out="0e+1o",
+            irreps_in="+".join(f"2x{path.irrep}" for path in paths),
+            irreps_out="2x0e+2x1o",
         )
     )
     with torch.no_grad():
@@ -172,14 +175,16 @@ def chain(backend):
         weights = (
             radial(lengths)[:, : convolution.num_paths].unsqueeze(-1).expand(-1, -1, 2)
         )
-        features = torch.zeros(positions.shape[0], 2, 4, dtype=positions.dtype)
-        features[:, :, 0] = 1.0
+        # Grouped by irrep: the two channels' scalars first, then their
+        # vectors.
+        features = torch.zeros(positions.shape[0], 8, dtype=positions.dtype)
+        features[:, :2] = 1.0
         messages = convolution(
             features, attributes, weights, sender, receiver, positions.shape[0]
         )
         nodes = torch.zeros(positions.shape[0], dtype=torch.long)
         site = contraction(down(messages), nodes)
-        return reduce(site.flatten(1), nodes, 1).sum()
+        return reduce(site, nodes, 1).sum()
 
     return energy
 
@@ -241,7 +246,7 @@ def test_the_canonical_weights_round_trip_through_a_fresh_instance(backend):
     with torch.no_grad():
         for parameter in written.weights:
             parameter.uniform_(-1, 1)
-    features = torch.randn(4, 3, 4)
+    features = torch.randn(4, 3 * 4)
     element = torch.tensor([0, 1, 0, 1])
     expected = written(features, element)
 
@@ -326,12 +331,11 @@ def test_the_contraction_builds_every_output_the_layers_ask_for(backend, irreps_
     )
     operation = backend.make_symmetric_contraction(descriptor)
     operation.initialize_weights(3)
-    features = torch.randn(5, 4, Irreps.parse("0e+1o").dimension)
+    features = torch.randn(5, 4 * Irreps.parse("0e+1o").dimension)
     elements = torch.randint(0, 2, (5,))
     assert operation(features, elements).shape == (
         5,
-        4,
-        Irreps.parse(irreps_out).dimension,
+        4 * Irreps.parse(irreps_out).dimension,
     )
 
 
@@ -444,7 +448,7 @@ def test_a_mixed_contraction_round_trips_through_a_fresh_instance(backend):
     restored = backend.make_symmetric_contraction(descriptor)
     restored.load_canonical(written.to_canonical())
 
-    features = torch.randn(6, 4, Irreps.parse("0e+1o").dimension)
+    features = torch.randn(6, 4 * Irreps.parse("0e+1o").dimension)
     elements = torch.randint(0, 2, (6,))
     assert torch.equal(written(features, elements), restored(features, elements))
 
@@ -487,3 +491,42 @@ def test_building_a_radial_basis_leaves_the_default_alone():
         assert torch.get_default_dtype() == torch.float32
     finally:
         torch.set_default_dtype(previous)
+
+
+def test_the_convolution_and_contraction_take_a_structure_with_no_edges(backend):
+    """A single atom has no edges, and the ops still return one row per node.
+    Found by the magnetic parity on an isolated iron atom: an inferred width
+    cannot be read off zero rows."""
+    convolution = backend.make_channelwise_tp_conv(
+        ChannelwiseTPConvDescriptor(
+            irreps_node="0e+1o", irreps_edge="0e+1o", irreps_out="0e+1o", num_features=3
+        )
+    )
+    no_edges = torch.zeros(0, dtype=torch.long)
+    message = convolution(
+        torch.randn(1, 12),
+        torch.randn(0, 4),
+        torch.randn(0, convolution.num_paths, 3),
+        no_edges,
+        no_edges,
+        1,
+    )
+    paths = channelwise_paths("0e+1o", "0e+1o", "0e+1o")
+    assert message.shape == (1, 3 * sum(path.irrep.dimension for path in paths))
+    assert not message.any()
+    on_no_rows = convolution(
+        torch.randn(0, 12),
+        torch.randn(0, 4),
+        torch.randn(0, convolution.num_paths, 3),
+        no_edges,
+        no_edges,
+        0,
+    )
+    assert on_no_rows.shape[0] == 0
+
+    contraction = backend.make_symmetric_contraction(
+        SymmetricContractionDescriptor(
+            irreps_in="0e+1o", irreps_out="0e", correlation=2, num_features=3
+        )
+    )
+    assert contraction(torch.randn(0, 12), no_edges).shape == (0, 3)

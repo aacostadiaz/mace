@@ -39,6 +39,7 @@ from mace_core.kernels.precision import Precision
 from mace_core.observables import InputSpec
 from torch import Tensor, nn
 
+from mace_torch.backends.layout import layout_of
 from mace_torch.nn.interaction import InteractionBlock, ResidualInteractionBlock
 from mace_torch.nn.layout import expanded_irreps
 from mace_torch.nn.node_inputs import NodeInputEmbedding
@@ -117,6 +118,7 @@ class MACEBackbone(nn.Module):
         self.element_agnostic_product = element_agnostic_product
         self.edge_axes = None if tuple(edge_axes) == (0, 1, 2) else list(edge_axes)
         self.num_features = num_features
+        self.layout = layout_of(backend)
         self.lmax = lmax
         self.cutoff = cutoff
         self.locality = locality
@@ -250,9 +252,10 @@ class MACEBackbone(nn.Module):
             graph: The flat dict. Read and never written to.
 
         Returns:
-            One ``[n_nodes, num_features, width]`` tensor per layer. The list
-            rather than only the last, because the readouts above this read
-            every layer and the descriptor API slices them.
+            One ``[n_nodes, num_features * width]`` tensor per layer, grouped
+            by irrep in the backend's layout. The list rather than only the
+            last, because the readouts above this read every layer and the
+            descriptor API slices them.
         """
         positions = graph["positions"]
         edge_index = graph["edge_index"]
@@ -341,7 +344,10 @@ class MACEBackbone(nn.Module):
         pieces = []
         for index, layer in enumerate(layers):
             if not invariants_only:
-                pieces.append(layer)
+                # Handed to a user, so canonical whatever the backend's layout.
+                grouped = expanded_irreps(self.layer_irreps[index], self.num_features)
+                terms = self.layout.terms(grouped)
+                pieces.append(self.layout.to_canonical(layer, terms))
                 continue
             multiplicity, irrep = Irreps.parse(self.layer_irreps[index]).terms[0]
             if irrep.degree != 0 or irrep.parity != 1:

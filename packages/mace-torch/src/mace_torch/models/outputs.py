@@ -155,7 +155,8 @@ class MACEOutputs(nn.Module):
 
         Args:
             graph: The flat dict. Read and never written to.
-            features: One ``[n_atoms, channels, width]`` tensor per layer.
+            features: One ``[n_atoms, channels * width]`` tensor per layer,
+                grouped by irrep in the backend's layout.
             zbl_node_energy: The short-range pair repulsion per atom, if the
                 model has one.
         """
