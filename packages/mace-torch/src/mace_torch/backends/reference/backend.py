@@ -51,12 +51,7 @@ from mace_torch.kernels.ops import (
     segment_sum,
     symmetric_contraction,
 )
-from mace_torch.nn.layout import (
-    channel_major,
-    grouped,
-    inverse_layout_index,
-    path_layout_index,
-)
+from mace_torch.nn.layout import channel_major, grouped, term_widths
 from mace_torch.nn.radial import (
     BesselBasis,
     ChebyshevBasis,
@@ -322,7 +317,7 @@ class ReferenceSymmetricContraction(nn.Module):
         """
         descriptor = self.descriptor
         channels = channel_major(
-            features, descriptor.irreps_in, descriptor.num_features
+            features, term_widths(descriptor.irreps_in), descriptor.num_features
         )
         # `nn.ModuleList` erases what it holds, so the element type has to be
         # said here. It is the one thing put into `self.bases`, two lines of
@@ -332,7 +327,7 @@ class ReferenceSymmetricContraction(nn.Module):
         joined = symmetric_contraction(
             channels, self._all_weights(), tables, element, self.orders
         )
-        return grouped(joined, descriptor.irreps_out)
+        return grouped(joined, term_widths(descriptor.irreps_out))
 
     def to_canonical(self) -> dict[str, Tensor]:
         """The flat ``[Z, A, mul]`` array, in the pinned path order.
@@ -423,8 +418,6 @@ class ReferenceChannelwiseTPConv(nn.Module):
     #: Annotated because `register_buffer` alone leaves it typed as a `Module`,
     #: and then reading its shape reads as subscripting a module.
     coefficients: Tensor
-    to_channels: Tensor
-    from_paths: Tensor
 
     """The message-passing tensor product. Node-level, always."""
 
@@ -432,34 +425,22 @@ class ReferenceChannelwiseTPConv(nn.Module):
         super().__init__()
         self.descriptor = descriptor
         dtype = _TORCH_DTYPE[descriptor.precision]
-        coefficients = _coupling_coefficients(descriptor)
+        # Every path owns its own block of output components, so the paths'
+        # coefficients sum into one array without overlapping.
+        coefficients = _coupling_coefficients(descriptor).sum(axis=0)
         self.register_buffer(
             "coefficients", torch.tensor(coefficients, dtype=dtype), persistent=False
         )
-        self.width_node = Irreps.parse(descriptor.irreps_node).dimension
         paths = channelwise_paths(
             descriptor.irreps_node, descriptor.irreps_edge, descriptor.irreps_out
         )
-        # The kernel works channel by channel, so the grouped node features
-        # are put into channel-major order for it, and its channel-major
-        # result back into one block per path.
-        self.register_buffer(
-            "to_channels",
-            torch.tensor(
-                inverse_layout_index(descriptor.irreps_node, descriptor.num_features)
-            ),
-            persistent=False,
-        )
-        self.register_buffer(
-            "from_paths",
-            torch.tensor(path_layout_index(paths, descriptor.num_features)),
-            persistent=False,
-        )
+        self.path_widths = [path.irrep.dimension for path in paths]
+        self.node_widths = term_widths(descriptor.irreps_node)
 
     @property
     def num_paths(self) -> int:
         """How many weights the external radial MLP has to produce."""
-        return int(self.coefficients.shape[0])
+        return len(self.path_widths)
 
     def forward(
         self,
@@ -470,24 +451,26 @@ class ReferenceChannelwiseTPConv(nn.Module):
         receiver: Tensor,
         num_nodes: int,
     ) -> Tensor:
-        """Grouped node features in, one grouped block per path out."""
-        channels = node_features[..., self.to_channels].reshape(
-            -1, self.descriptor.num_features, self.width_node
+        """Grouped node features in, one grouped block per path out.
+
+        The kernel works channel by channel, so the grouped node features are
+        put into channel-major order for it, and its channel-major result back
+        into one block per path.
+        """
+        channels = channel_major(
+            node_features, self.node_widths, self.descriptor.num_features
         )
         message = channelwise_tp_conv(
             channels,
             edge_attributes,
             radial_weights,
             self.coefficients,
+            self.path_widths,
             sender,
             receiver,
             num_nodes,
         )
-        # The width is spelled out: a structure with no edges has zero rows
-        # here, and `-1` cannot be inferred from an empty tensor.
-        return message.reshape(num_nodes, self.from_paths.shape[0])[
-            ..., self.from_paths
-        ]
+        return grouped(message, self.path_widths)
 
 
 class ReferenceFullyConnectedTP(nn.Module):
