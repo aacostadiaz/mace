@@ -47,11 +47,13 @@ from mace_torch.backends.reference.spherical_harmonics import spherical_harmonic
 from mace_torch.kernels.ops import (
     channelwise_tp_conv,
     equivariant_linear,
+    monomial_basis,
     segment_sum,
     symmetric_contraction,
 )
 from mace_torch.nn.layout import (
-    channel_layout_index,
+    channel_major,
+    grouped,
     inverse_layout_index,
     path_layout_index,
 )
@@ -239,15 +241,11 @@ class _ConstantTensors(nn.Module):
 class ReferenceSymmetricContraction(nn.Module):
     """The many-body contraction, over the basis the descriptor records.
 
-    One contraction per output irrep, concatenated on the component axis. They
-    cannot share a stacked basis: each output irrep has its own component count,
-    so stacking them would be joining arrays whose second axis differs. The
-    frozen tree reaches the same shape by holding one `Contraction` per output
-    irrep, and this is that, with the loop kept explicit.
+    One basis per output irrep and body order, each rewritten over the input's
+    symmetric monomials. The kernel takes them all in one call, so the monomials
+    are formed once and shared by every output irrep, and the results are
+    concatenated on the component axis.
     """
-
-    to_channels: Tensor
-    from_channels: Tensor
 
     def __init__(self, descriptor: SymmetricContractionDescriptor) -> None:
         super().__init__()
@@ -271,7 +269,13 @@ class ReferenceSymmetricContraction(nn.Module):
                 # array. A `2e` output is exactly that at body order one.
                 trailing = int(np.prod(array.shape[2:])) if array.ndim > 2 else 1
                 flat = array.reshape(array.shape[0], array.shape[1], trailing)
-                tables.append(torch.tensor(flat, dtype=dtype))
+                # Rewritten over the input's symmetric monomials in fp64 and
+                # only then cast, so the symmetrization rounds once.
+                tables.append(
+                    monomial_basis(torch.tensor(flat, dtype=torch.float64), order).to(
+                        dtype
+                    )
+                )
                 group.append(
                     nn.Parameter(
                         torch.zeros(
@@ -287,22 +291,6 @@ class ReferenceSymmetricContraction(nn.Module):
         self.weights = nn.ParameterList(weights)
         self.bases = nn.ModuleList(bases)
         self.width_in = Irreps.parse(descriptor.irreps_in).dimension
-        # The kernel works channel by channel, so the grouped values are put
-        # into channel-major order for it and back afterwards.
-        self.register_buffer(
-            "to_channels",
-            torch.tensor(
-                inverse_layout_index(descriptor.irreps_in, descriptor.num_features)
-            ),
-            persistent=False,
-        )
-        self.register_buffer(
-            "from_channels",
-            torch.tensor(
-                channel_layout_index(descriptor.irreps_out, descriptor.num_features)
-            ),
-            persistent=False,
-        )
 
     def initialize_weights(self, seed: int) -> None:
         """A standard normal, unscaled.
@@ -316,36 +304,35 @@ class ReferenceSymmetricContraction(nn.Module):
             for position, parameter in enumerate(self.weights):
                 parameter.copy_(_draw(parameter, seed + position))
 
-    def _group(self, position: int) -> list[Tensor]:
-        """One output irrep's weights, by integer index.
+    def _all_weights(self) -> list[Tensor]:
+        """The weights, output irrep outermost, by integer index.
 
-        Flat storage with integer indexing rather than a slice of the
-        `ParameterList`: slicing one goes through `slice.indices`, a C builtin
-        that `torch.compile` cannot trace, and the break lands in the middle of
-        the backbone rather than here.
+        Integer indexing rather than iterating or slicing the `ParameterList`:
+        slicing one goes through `slice.indices`, a C builtin that
+        `torch.compile` cannot trace, and the break lands in the middle of the
+        backbone rather than here.
         """
-        base = position * self.orders
-        return [self.weights[base + order] for order in range(self.orders)]
+        return [self.weights[position] for position in range(len(self.weights))]
 
     def forward(self, features: Tensor, element: Tensor) -> Tensor:
-        """``[n_nodes, C * dim_in]`` in, ``[n_nodes, C * dim_out]`` out."""
-        nodes = features.shape[0]
-        channels = features[..., self.to_channels].reshape(
-            nodes, self.descriptor.num_features, self.width_in
+        """``[n_nodes, C * dim_in]`` in, ``[n_nodes, C * dim_out]`` out.
+
+        The kernel works channel by channel, so the grouped values are put into
+        channel-major order for it and back afterwards.
+        """
+        descriptor = self.descriptor
+        channels = channel_major(
+            features, descriptor.irreps_in, descriptor.num_features
         )
         # `nn.ModuleList` erases what it holds, so the element type has to be
         # said here. It is the one thing put into `self.bases`, two lines of
         # the constructor away.
         bases = cast("list[_ConstantTensors]", list(self.bases))
-        pieces = [
-            symmetric_contraction(
-                channels, self._group(position), list(tables), element
-            )
-            for position, tables in enumerate(bases)
-        ]
-        # The width is spelled out, since `-1` cannot be inferred for zero rows.
-        joined = torch.cat(pieces, dim=-1).reshape(nodes, self.from_channels.shape[0])
-        return joined[..., self.from_channels]
+        tables = [table for group in bases for table in group]
+        joined = symmetric_contraction(
+            channels, self._all_weights(), tables, element, self.orders
+        )
+        return grouped(joined, descriptor.irreps_out)
 
     def to_canonical(self) -> dict[str, Tensor]:
         """The flat ``[Z, A, mul]`` array, in the pinned path order.
