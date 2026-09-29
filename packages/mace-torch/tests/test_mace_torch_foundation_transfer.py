@@ -301,6 +301,7 @@ def test_a_checkpoint_recording_no_heads_is_refused(tmp_path):
     import json
 
     from mace_core.metadata import ConfigRecord, ModelMetadata, Provenance
+    from mace_torch.serialization import VERSION
 
     config = ResolvedConfig.model_validate(
         {
@@ -316,7 +317,7 @@ def test_a_checkpoint_recording_no_heads_is_refused(tmp_path):
         json.dumps(
             {
                 "format": "mace-v1-checkpoint",
-                "version": 1,
+                "version": VERSION,
                 "config": record.model_dump(mode="json"),
                 "tensors": [],
             }

@@ -71,6 +71,7 @@ from mace_core.kernels.descriptors import (
     SymmetricContractionDescriptor,
 )
 from mace_core.kernels.paths import channelwise_paths
+from mace_core.kernels.reorder import ReorderError, WeightReorder, derive_reorder
 from torch import Tensor, nn
 
 from mace_torch.backends.reference import ReferenceBackend
@@ -343,12 +344,19 @@ class CuEqChannelwiseTPConv(nn.Module):
 
 
 @cache
-def _contraction_map(irreps_in: str, irreps_out: str, correlation: int) -> np.ndarray:
-    """``M`` with cuEquivariance's weights ``= M @`` the canonical ones.
+def _contraction_map(
+    irreps_in: str, irreps_out: str, correlation: int
+) -> WeightReorder:
+    """The map from canonical weights to cuEquivariance's, derived once.
 
-    Both contractions are linear in their weights, so evaluating each basis
-    direction of both on the same inputs gives two matrices whose columns span
-    the same outputs; ``M`` solves one against the other. One channel and one
+    Both contractions are linear in their weights, so each weight direction's
+    output on the same inputs is a basis vector of the function space the op
+    spans: one set per implementation, in its own path order and
+    normalization. :func:`~mace_core.kernels.derive_reorder` relates the two
+    sets, decomposes the map into its independent blocks, and refuses when
+    cuEquivariance does not reproduce the canonical space. Evaluating the ops
+    rather than comparing the two basis arrays is what folds in whatever
+    normalization cuEquivariance applies inside its kernel. One channel and one
     element suffice: the map is the same for every channel and element.
     """
     descriptor = SymmetricContractionDescriptor(
@@ -396,24 +404,25 @@ def _contraction_map(irreps_in: str, irreps_out: str, correlation: int) -> np.nd
             operation.weight.zero_()
             operation.weight[0, path, 0] = 1.0
             columns_cueq.append(operation(features, element).reshape(-1))
-    canonical_outputs = torch.stack(columns_reference, dim=1)
-    cueq_outputs = torch.stack(columns_cueq, dim=1)
-    projection = torch.linalg.lstsq(cueq_outputs, canonical_outputs).solution
-    residual = (cueq_outputs @ projection - canonical_outputs).abs().max().item()
-    scale = canonical_outputs.abs().max().item()
-    if residual > 1e-10 * max(scale, 1.0):
+    canonical_outputs = torch.stack(columns_reference).numpy()
+    cueq_outputs = torch.stack(columns_cueq).numpy()
+    scale = max(float(np.abs(canonical_outputs).max()), 1.0)
+    try:
+        return derive_reorder(canonical_outputs, cueq_outputs, tolerance=1e-10 * scale)
+    except ReorderError as error:
         raise UnsupportedDescriptorError(
-            f"cuEquivariance's basis for {descriptor} does not span the "
-            f"canonical one: residual {residual:.2e}"
-        )
-    return projection.numpy()
+            f"cuEquivariance's contraction for {descriptor} cannot hold the "
+            f"canonical weights: {error}"
+        ) from error
 
 
 class CuEqSymmetricContraction(nn.Module):
-    """The many-body contraction over cuEquivariance's reduced basis."""
+    """The many-body contraction over cuEquivariance's reduced basis.
 
-    projection: Tensor
-    inverse: Tensor
+    Its weights are cuEquivariance's own, ``[Z, A, mul]`` in its path order,
+    and the canonical ones are carried across by a block-diagonal map derived
+    once per basis shape. The map runs only at the checkpoint boundary.
+    """
 
     def __init__(self, descriptor: SymmetricContractionDescriptor) -> None:
         super().__init__()
@@ -430,34 +439,38 @@ class CuEqSymmetricContraction(nn.Module):
             math_dtype=dtype,
             original_mace=False,
         )
-        projection = _contraction_map(
+        #: Canonical weights onto cuEquivariance's paths, and back.
+        self.weight_reorder = _contraction_map(
             descriptor.irreps_in, descriptor.irreps_out, descriptor.correlation
         )
-        self.register_buffer(
-            "projection", torch.tensor(projection, dtype=dtype), persistent=False
-        )
-        self.register_buffer(
-            "inverse",
-            torch.tensor(np.linalg.inv(projection), dtype=dtype),
-            persistent=False,
-        )
+        self._restore = self.weight_reorder.inverse()
         self._reference = [ReferenceBackend().make_symmetric_contraction(descriptor)]
         self._path_counts = self._reference[0].to_canonical()["path_counts"]
 
     def forward(self, features: Tensor, element: Tensor) -> Tensor:
         return self.operation(features, element)
 
+    def canonical_metadata(self) -> dict[str, object]:
+        """The canonical layout's record, since what this op writes is the
+        canonical layout whatever it holds internally."""
+        return self._reference[0].canonical_metadata()
+
     def to_canonical(self) -> dict[str, Tensor]:
-        weight = torch.einsum(
-            "pq,zqc->zpc", self.inverse, self.operation.weight.detach()
-        )
-        return {"weight": weight, "path_counts": self._path_counts.clone()}
+        held = self.operation.weight.detach()
+        weight = self._restore.apply(held.cpu().double().numpy(), axis=1)
+        return {
+            "weight": torch.as_tensor(weight, dtype=held.dtype, device=held.device),
+            "path_counts": self._path_counts.clone(),
+        }
 
     def load_canonical(self, state: dict[str, Tensor]) -> None:
-        weight = state["weight"].to(self.projection)
+        weight = self.weight_reorder.apply(
+            state["weight"].detach().cpu().double().numpy(), axis=1
+        )
+        target = self.operation.weight
         with torch.no_grad():
-            self.operation.weight.copy_(
-                torch.einsum("qp,zpc->zqc", self.projection, weight)
+            target.copy_(
+                torch.as_tensor(weight, dtype=target.dtype, device=target.device)
             )
 
     def initialize_weights(self, seed: int) -> None:

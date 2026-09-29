@@ -73,11 +73,12 @@ def test_the_contraction_map_is_block_diagonal_with_small_blocks(
     """What the ticket measured across the production grid: mostly one to
     one, a few small blocks where the two bases kept different members of a
     linearly dependent set, and well conditioned."""
-    projection = _contraction_map(irreps_in, irreps_out, correlation)
-    support = np.abs(projection) > 1e-9
-    assert support.sum(axis=0).max() <= 3
-    assert support.sum(axis=1).max() <= 3
-    assert np.linalg.cond(projection) < 10
+    reorder = _contraction_map(irreps_in, irreps_out, correlation)
+    assert reorder.max_block_size <= 3
+    assert all(np.linalg.cond(block.matrix) < 10 for block in reorder.blocks)
+    weights = np.random.default_rng(0).normal(size=(2, reorder.path_count, 3))
+    back = reorder.inverse().apply(reorder.apply(weights, axis=1), axis=1)
+    np.testing.assert_allclose(back, weights, rtol=0, atol=1e-12)
 
 
 def test_it_declines_what_its_kernels_cannot_compute():

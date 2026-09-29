@@ -76,6 +76,22 @@ def test_the_reference_passes_its_own_conformance(dtype):
 
 
 @fp64_only
+@pytest.mark.parametrize("layout", ["mul_ir", "ir_mul"])
+def test_backend_reorder_is_block_diagonal(layout):
+    """Every op with weights maps canonical weights onto its own through
+    independent, invertible blocks within the bound, and back exactly. The
+    harness derives the map from the op; here it runs over the reference, and
+    each accelerated backend's own suite runs it over that backend."""
+    results = run_backend_conformance(ReferenceBackend(), layout=layout)
+    weighted = {"linear", "symmetric_contraction", "fully_connected_tp"}
+    assert all(
+        "reorder" in result.checks
+        for result in results
+        if result.built and result.op in weighted
+    )
+
+
+@fp64_only
 def test_a_partial_backend_passes_and_its_declines_are_recorded():
     results = run_backend_conformance(PartialBackend())
     built = {(result.op, result.built) for result in results}

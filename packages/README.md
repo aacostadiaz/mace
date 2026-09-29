@@ -244,6 +244,7 @@ reference in `mace_torch/backends/reference/backend.py` is the one to copy.
 | `mace_core/kernels/paths.py` | The tensor-product paths of the convolution and their order. |
 | `mace_core/kernels/precision.py` | Dtype names and the per-op precision configuration. |
 | `mace_core/kernels/protocol.py` | The interface a kernel backend implements. |
+| `mace_core/kernels/reorder.py` | The map from canonical contraction weights to a backend's own path order, derived from two bases and split into its independent blocks. |
 | `mace_core/kernels/registry.py` | Finding kernel backends by entry point. |
 | `mace_core/metadata.py` | `ModelMetadata`: the versioned record every checkpoint carries. |
 | `mace_core/neighbors.py` | The neighbour list as a pure function, with the cell regimes stated. |

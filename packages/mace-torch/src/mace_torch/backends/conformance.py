@@ -52,6 +52,7 @@ from mace_core.kernels.descriptors import (
 from mace_core.kernels.paths import channelwise_paths
 from mace_core.kernels.precision import Precision
 from mace_core.kernels.protocol import InternalWeights
+from mace_core.kernels.reorder import decompose
 from torch import Tensor, nn
 
 from mace_torch.backends.layout import Layout, Terms
@@ -359,6 +360,7 @@ def run_backend_conformance(
     compile_ops: bool = False,
     cuda_graphs: bool = False,
     layout: str = "mul_ir",
+    max_block: int = 3,
 ) -> list[ConformanceResult]:
     """Check every case against the reference. Raises on the first failure.
 
@@ -373,6 +375,8 @@ def run_backend_conformance(
         layout: The feature layout every case is built in. The op is fed and
             read through the canonical layout, so it is held to the same
             reference whatever its own.
+        max_block: The largest block an op's canonical to internal weight map
+            may have. Three is the largest measured on the production grid.
 
     Returns:
         One result per case, including the declined ones.
@@ -445,6 +449,9 @@ def run_backend_conformance(
                         f"{where}: canonical round trip changed {theirs}"
                     )
             result.checks.append("weights")
+            if precision == "float64":
+                _check_reorder(candidate, state, like, max_block, where)
+                result.checks.append("reorder")
 
         inputs = _inputs(descriptor, dtype, device, seed + number)
         mine_arguments = [
@@ -551,6 +558,95 @@ def run_backend_conformance(
             result.checks.append("weight gradients")
         results.append(result)
     return results
+
+
+def _flat_floats(state: Any) -> list[Tensor]:
+    return [piece for piece in _flat_canonical(state) if piece.is_floating_point()]
+
+
+def _with_floats(state: Any, values: Tensor) -> Any:
+    """``state`` with its floating tensors replaced, in order, from ``values``."""
+    offset = 0
+
+    def rebuild(node: Any) -> Any:
+        nonlocal offset
+        if isinstance(node, Tensor):
+            if not node.is_floating_point():
+                return node
+            piece = values[offset : offset + node.numel()].reshape(node.shape)
+            offset += node.numel()
+            return piece.to(node)
+        return {name: rebuild(node[name]) for name in sorted(node)}
+
+    return rebuild(state)
+
+
+def _check_reorder(
+    candidate: Any, state: Any, like: Tensor, max_block: int, where: str
+) -> None:
+    """The map from canonical weights to the op's own is block diagonal.
+
+    Derived from the op, not asked of it: one canonical weight direction is
+    loaded at a time and the op's parameters are read back, which gives the map
+    whatever the backend does inside ``load_canonical``. The map has to split
+    into independent square blocks, each invertible, none larger than
+    ``max_block``, and a canonical state has to come back exactly. A future
+    backend release whose internal order made the map dense fails here instead
+    of silently reinterpreting a checkpoint.
+    """
+    canonical = _canonical_to(state, like)
+    width = sum(piece.numel() for piece in _flat_floats(canonical))
+    parameters = list(candidate.parameters())
+    columns = []
+    try:
+        with torch.no_grad():
+            for index in range(width):
+                direction = torch.zeros(width, dtype=torch.float64)
+                direction[index] = 1.0
+                candidate.load_canonical(_with_floats(canonical, direction))
+                columns.append(
+                    torch.cat(
+                        [p.detach().reshape(-1).double().cpu() for p in parameters]
+                    )
+                )
+            weights = torch.randn(
+                width, generator=torch.Generator().manual_seed(11), dtype=torch.float64
+            )
+            candidate.load_canonical(_with_floats(canonical, weights))
+            back = torch.cat(
+                [
+                    p.double().reshape(-1).cpu()
+                    for p in _flat_floats(candidate.to_canonical())
+                ]
+            )
+    finally:
+        candidate.load_canonical(canonical)
+    held = torch.stack(columns, dim=1).numpy()
+    blocks = decompose(held.T)
+    if sum(len(block.canonical) for block in blocks) != width:
+        raise AssertionError(
+            f"{where}: some canonical weight reaches none of the op's own"
+        )
+    for block in blocks:
+        if len(block.canonical) != len(block.backend):
+            raise AssertionError(
+                f"{where}: a block maps {len(block.canonical)} canonical weights "
+                f"onto {len(block.backend)} of its own, so the map is not invertible"
+            )
+        if len(block.canonical) > max_block:
+            raise AssertionError(
+                f"{where}: a block couples {len(block.canonical)} weights, over "
+                f"the bound of {max_block}; the map is closer to dense than the "
+                f"layout allows"
+            )
+        if np.linalg.cond(block.matrix) > 1e8:
+            raise AssertionError(f"{where}: a block of the weight map is singular")
+    if not torch.allclose(back, weights, rtol=0, atol=1e-12):
+        error = (back - weights).abs().max().item()
+        raise AssertionError(
+            f"{where}: a canonical state comes back off by {error:.2e} through "
+            f"the op's own weights"
+        )
 
 
 def _check_weight_gradients(
