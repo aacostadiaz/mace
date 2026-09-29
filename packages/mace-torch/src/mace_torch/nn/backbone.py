@@ -25,7 +25,7 @@ Four things this does not do, each replacing something the frozen tree does:
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any
+from typing import Any, Literal
 
 import torch
 from mace_core.clebsch_gordan.irreps import Irreps
@@ -47,6 +47,7 @@ from mace_torch.nn.interaction import (
 from mace_torch.nn.layout import expanded_irreps
 from mace_torch.nn.node_inputs import NodeInputEmbedding
 from mace_torch.nn.product_basis import EquivariantProductBasisBlock
+from mace_torch.nn.radial import AgnesiTransform, SoftTransform
 
 __all__ = ["MACEBackbone"]
 
@@ -97,6 +98,10 @@ class MACEBackbone(nn.Module):
         cutoff_order: The order of the envelope that takes it to zero at the
             cutoff. It comes from the model's cutoff setting, not from the
             basis.
+        distance_transform: ``"agnesi"`` or ``"soft"`` evaluates the radial
+            basis on that transform of each length, scaled by the pair's
+            covalent radii, and the cutoff envelope on the length itself.
+            ``"none"`` by default.
         precision: The dtype name every op is built at.
         node_inputs: Declared per-node input streams to mix into the features
             before the first layer. Nothing about them is special-cased: each
@@ -152,6 +157,7 @@ class MACEBackbone(nn.Module):
         avg_num_neighbors: float = 1.0,
         radial_kind: RadialKind = "bessel",
         cutoff_order: int = 6,
+        distance_transform: Literal["none", "agnesi", "soft"] = "none",
         precision: Precision = "float64",
         locality: Callable[[Tensor, Mapping[str, Any]], Tensor] | None = None,
         node_inputs: Sequence[InputSpec] = (),
@@ -195,6 +201,15 @@ class MACEBackbone(nn.Module):
                 cutoff_order=cutoff_order,
                 precision=precision,
             )
+        )
+        transforms = {"agnesi": AgnesiTransform, "soft": SoftTransform}
+        if distance_transform != "none" and distance_transform not in transforms:
+            raise ValueError(
+                f"distance_transform is {distance_transform!r}; it is 'none', "
+                f"'agnesi' or 'soft'."
+            )
+        self.distance_transform = (
+            transforms[distance_transform]() if distance_transform != "none" else None
         )
         # The embedding produces scalars only, one per channel. The higher
         # irreps appear for the first time out of the first convolution, which
@@ -361,7 +376,13 @@ class MACEBackbone(nn.Module):
         edge_attributes = self.edge_attributes(
             vectors if self.edge_axes is None else vectors[:, self.edge_axes]
         )
-        radial = self.radial(lengths)
+        if self.distance_transform is None:
+            radial = self.radial(lengths)
+        else:
+            radial = self.radial(
+                lengths,
+                self.distance_transform(lengths, graph["atomic_numbers"], edge_index),
+            )
 
         element = self.element_index(graph["atomic_numbers"])
         one_hot = torch.zeros(
