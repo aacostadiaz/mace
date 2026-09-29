@@ -75,6 +75,12 @@ class MACEBackbone(nn.Module):
             returning the features to carry into the next layer. This is where
             a domain-decomposed run slices off its ghost nodes. Absent by
             default, and when absent the forward is the hook-free path exactly.
+        residual_first_layer: Build the first layer as every later one is,
+            with the skip taken from its input, the element embedding, and
+            added by the product basis. The frozen tree does so when its first
+            interaction is ``RealAgnosticResidualInteractionBlock``, its default
+            and what MACE-MP-0 was trained with; otherwise the first layer's
+            skip is applied to the message and replaces it.
         full_last_layer: Keep every irrep in the last layer's features rather
             than only its scalars. A model that reads more than invariants off
             the last layer needs it: a charge-aware model reads dipoles there.
@@ -103,6 +109,7 @@ class MACEBackbone(nn.Module):
         precision: Precision = "float64",
         locality: Callable[[Tensor, Mapping[str, Any]], Tensor] | None = None,
         node_inputs: Sequence[InputSpec] = (),
+        residual_first_layer: bool = False,
         full_last_layer: bool = False,
         element_agnostic_product: bool = False,
         edge_axes: tuple[int, int, int] = (0, 1, 2),
@@ -164,7 +171,7 @@ class MACEBackbone(nn.Module):
             node_per_channel = self.embedding_irreps if layer == 0 else hidden_irreps
             last = layer == num_layers - 1 and not full_last_layer
             product_per_channel = "0e" if last else hidden_irreps
-            if layer == 0:
+            if layer == 0 and not residual_first_layer:
                 interactions.append(
                     InteractionBlock(
                         backend,
