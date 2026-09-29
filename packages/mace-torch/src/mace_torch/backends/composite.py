@@ -31,11 +31,13 @@ from collections import Counter
 from dataclasses import dataclass, replace
 from typing import Any
 
+from mace_core.config.precision import PrecisionConfig
 from mace_core.kernels.capabilities import BackendCapabilities
 from mace_core.kernels.protocol import REFERENCE_ONLY_OPS
 from mace_core.kernels.registry import get_backend
 
 from mace_torch.backends.layout import CANONICAL, Layout
+from mace_torch.backends.precision import PrecisionBackend
 from mace_torch.backends.reference import ReferenceBackend
 
 __all__ = [
@@ -173,20 +175,34 @@ class CompositeBackend:
         return "\n".join(lines)
 
 
-def resolve_backend(name: str) -> Any:
+def resolve_backend(
+    name: str,
+    precision: PrecisionConfig | None = None,
+    supports_float64: bool = True,
+) -> Any:
     """The backend a model named ``name`` is built with.
 
     The reference on its own, or the named backend with the reference behind
     it for every op it does not build. Resolved once, at build time.
+
+    With a precision, each of the two builds its ops at the precision it is
+    given, and meets a wider accumulation floor its own way, so an op the
+    reference builds for the chosen backend meets the floor as well.
 
     Raises:
         BackendNotAvailableError: The name is not registered, or it is and did
             not import on this machine. Nothing is substituted for it.
     """
     backend = get_backend(name)
+
+    def at_precision(member: Any) -> Any:
+        if precision is None:
+            return member
+        return PrecisionBackend(member, precision, supports_float64)
+
     if isinstance(backend, ReferenceBackend):
-        return backend
-    return CompositeBackend(backend, ReferenceBackend())
+        return at_precision(backend)
+    return CompositeBackend(at_precision(backend), at_precision(ReferenceBackend()))
 
 
 def require_double_backward(name: str, why: str) -> None:

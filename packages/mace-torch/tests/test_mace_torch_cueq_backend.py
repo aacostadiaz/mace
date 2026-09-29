@@ -27,9 +27,11 @@ from mace_torch_backend_models import engine, graph
 
 pytest.importorskip("cuequivariance_torch")
 
+from mace_core.config.precision import PrecisionConfig, PrecisionPolicy
 from mace_torch.backends import CompositeBackend, resolve_backend
 from mace_torch.backends.conformance import run_backend_conformance
 from mace_torch.backends.cueq import CuEqBackend, _contraction_map
+from mace_torch.backends.precision import boundary_precision
 from mace_torch.serialization import (
     canonical_state,
     load_canonical_state,
@@ -214,3 +216,33 @@ def test_cueq_ops_compile_whole_and_replay_from_a_cuda_graph(dtype):
     for result in results:
         if result.built:
             assert {"compiles", "cuda graph"} <= set(result.checks), result.op
+
+
+@fp64_only
+@pytest.mark.parametrize("device", DEVICES)
+def test_a_wider_floor_is_cueqs_math_dtype_and_needs_no_cast(device):
+    """cuEquivariance has an accumulator of its own, so an op held to a
+    float64 floor keeps float32 data and float64 math, and the model around it
+    stays float32 with no cast at any op's boundary."""
+    floor = PrecisionConfig(
+        model="float32",
+        ops=(
+            (
+                "symmetric_contraction",
+                PrecisionPolicy("float32", "float64", "float32"),
+            ),
+        ),
+    )
+    model = engine("cueq", device=device, precision=floor)
+    math = {
+        path: module.math_dtype
+        for path, module in model.named_modules()
+        if isinstance(getattr(module, "math_dtype", None), torch.dtype)
+    }
+    contractions = {path for path in math if ".contraction." in path}
+    assert contractions
+    for path, dtype in math.items():
+        wanted = torch.float64 if path in contractions else torch.float32
+        assert dtype is wanted, path
+    assert all(boundary_precision(module) is None for module in model.modules())
+    assert {p.dtype for p in model.parameters()} == {torch.float32}

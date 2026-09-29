@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 from ase.build import bulk
+from mace_core.config.precision import PrecisionConfig
 from mace_core.config.resolved import ResolvedConfig
 from mace_core.data.backend import DatasetStatistics
 from mace_core.data.configuration import Configuration
@@ -26,6 +27,7 @@ def engine(
     heads: tuple[str, ...] = ("a",),
     readout: dict | None = None,
     observables: tuple[str, ...] = ("energy", "forces", "stress"),
+    precision: PrecisionConfig | None = None,
 ):
     config = ResolvedConfig.model_validate(
         {
@@ -51,6 +53,7 @@ def engine(
         heads=heads,
         e0s=ResolvedE0s({name: {6: -1.0, 14: -2.0} for name in heads}),
         statistics=DatasetStatistics(avg_num_neighbors=8.0, std=1.0),
+        **({"precision": precision} if precision is not None else {}),
     )
     return built.to(device)
 

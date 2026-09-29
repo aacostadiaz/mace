@@ -57,6 +57,10 @@ class BackendCapabilities:
             Training on forces or stress needs the second derivative, so a
             backend without it is usable for inference and rejected at build
             time for that training, loudly.
+        wide_accumulation: Whether its ops accumulate in a dtype wider than
+            they compute in, as a fused kernel with its own accumulator can. A
+            backend without it is handed a precision floor as the dtype to
+            compute in, and holds that op's weights in it.
     """
 
     ops: frozenset[str] = field(default_factory=frozenset)
@@ -70,6 +74,7 @@ class BackendCapabilities:
     native_layout: ActivationLayout = "mul_ir"
     bases: frozenset[str] = field(default_factory=lambda: frozenset({"reduced"}))
     supports_double_backward: bool = False
+    wide_accumulation: bool = False
 
     def supports(self, descriptor: Descriptor) -> bool:
         """Whether this backend can build exactly this op.

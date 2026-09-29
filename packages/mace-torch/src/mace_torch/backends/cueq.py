@@ -226,7 +226,7 @@ class CuEqLinear(_PermutedWeights):
             shared_weights=True,
             internal_weights=True,
             dtype=dtype,
-            math_dtype=dtype,
+            math_dtype=_DTYPES[descriptor.accumulate_floor],
         )
         self._setup(
             reference,
@@ -260,7 +260,7 @@ class CuEqFullyConnectedTP(_PermutedWeights):
             shared_weights=True,
             internal_weights=True,
             dtype=dtype,
-            math_dtype=dtype,
+            math_dtype=_DTYPES[descriptor.accumulate_floor],
         )
         scalars = Irreps.parse(descriptor.irreps_in2).dimension
         self._setup(
@@ -296,7 +296,7 @@ class CuEqChannelwiseTPConv(nn.Module):
             shared_weights=False,
             internal_weights=False,
             dtype=dtype,
-            math_dtype=dtype,
+            math_dtype=_DTYPES[descriptor.accumulate_floor],
         )
         expected = _irreps(
             "+".join(f"{descriptor.num_features}x{path.irrep}" for path in paths)
@@ -436,7 +436,7 @@ class CuEqSymmetricContraction(nn.Module):
             descriptor.num_elements,
             layout=_layout(descriptor),
             dtype=dtype,
-            math_dtype=dtype,
+            math_dtype=_DTYPES[descriptor.accumulate_floor],
             original_mace=False,
         )
         #: Canonical weights onto cuEquivariance's paths, and back.
@@ -512,6 +512,7 @@ class CuEqBackend:
             native_layout="ir_mul",
             bases=frozenset({"reduced"}),
             supports_double_backward=True,
+            wide_accumulation=True,
         )
 
     def _check(self, descriptor: Descriptor) -> None:

@@ -243,7 +243,9 @@ class MACEBackbone(nn.Module):
             dtype=atomic_numbers.dtype,
             device=atomic_numbers.device,
         )
-        return (atomic_numbers[:, None] == table[None, :]).float().argmax(dim=-1)
+        return (
+            (atomic_numbers[:, None] == table[None, :]).to(torch.int64).argmax(dim=-1)
+        )
 
     def forward(self, graph: Mapping[str, Any]) -> list[Tensor]:
         """Every layer's node features, in order.

@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 import torch
 from mace_core.elements import AtomicNumberTable, ResolvedE0s
-from mace_core.kernels.precision import PrecisionConfig
+from mace_core.config.precision import PrecisionConfig
 from mace_core.neighbors import get_neighborhood
 from mace_core.observables import ObservableSpec
 from mace_torch.backends.reference import ReferenceBackend
@@ -75,6 +75,7 @@ def convert(legacy):
         ScaleShiftSpec("std", scale, shift),
         PrecisionConfig(),
         zbl_in_scale_shift=getattr(legacy, "scale_shift", None) is not None,
+        widen_node_energy=getattr(legacy, "scale_shift", None) is not None,
     )
     model = MACEModel(
         ReferenceBackend(), observables=[ENERGY], energy_head=head, **config
