@@ -140,15 +140,22 @@ class _Convolution(nn.Module):
         sender: Tensor,
         receiver: Tensor,
         num_nodes: int,
+        edge_envelope: Tensor | None = None,
     ) -> Tensor:
-        """Flat node features in, flat message out, both grouped by irrep."""
+        """Flat node features in, flat message out, both grouped by irrep.
+
+        ``edge_envelope``, ``[n_edges, 1]``, is the cutoff envelope when the
+        radial embedding does not carry it, multiplied into the radial
+        network's output and the learned density.
+        """
         mapped = self.linear_up(node_features)
         mapped = mapped[..., self.to_channels].reshape(
             -1, self.num_features, self.node_width
         )
-        weights = self.radial(edge_radial).reshape(
-            -1, self.num_paths, self.num_features
-        )
+        weights = self.radial(edge_radial)
+        if edge_envelope is not None:
+            weights = weights * edge_envelope
+        weights = weights.reshape(-1, self.num_paths, self.num_features)
         message = self.convolution(
             mapped, edge_attributes, weights, sender, receiver, num_nodes
         )
@@ -156,6 +163,8 @@ class _Convolution(nn.Module):
         if self.density is None:
             return self.linear(message) / self.neighbours
         edge_density = torch.tanh(self.density(edge_radial) ** 2)
+        if edge_envelope is not None:
+            edge_density = edge_density * edge_envelope
         density = segment_sum(edge_density, receiver, num_nodes)
         return self.linear(message) / (density + 1.0)
 
@@ -244,10 +253,17 @@ class InteractionBlock(nn.Module):
         sender: Tensor,
         receiver: Tensor,
         num_nodes: int,
+        edge_envelope: Tensor | None = None,
     ) -> tuple[Tensor, Tensor | None]:
         """The message, flat and grouped by irrep, and no carried skip."""
         message = self.body(
-            node_features, edge_attributes, edge_radial, sender, receiver, num_nodes
+            node_features,
+            edge_attributes,
+            edge_radial,
+            sender,
+            receiver,
+            num_nodes,
+            edge_envelope,
         )
         return self.skip(message, element_attributes), None
 
@@ -315,11 +331,18 @@ class ResidualInteractionBlock(nn.Module):
         sender: Tensor,
         receiver: Tensor,
         num_nodes: int,
+        edge_envelope: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         """The message and the carried skip, both flat and grouped."""
         carried = self.skip(node_features, element_attributes)
         message = self.body(
-            node_features, edge_attributes, edge_radial, sender, receiver, num_nodes
+            node_features,
+            edge_attributes,
+            edge_radial,
+            sender,
+            receiver,
+            num_nodes,
+            edge_envelope,
         )
         return message, carried
 
@@ -463,6 +486,7 @@ class NonLinearInteractionBlock(nn.Module):
         sender: Tensor,
         receiver: Tensor,
         num_nodes: int,
+        edge_envelope: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         """The message and the carried skip, both flat and grouped."""
         carried = self.skip(node_features)
@@ -476,12 +500,13 @@ class NonLinearInteractionBlock(nn.Module):
             ],
             dim=-1,
         )
-        weights = self.radial(conditioned).reshape(
-            -1, self.num_paths, self.num_up_features
-        )
-        density = segment_sum(
-            torch.tanh(self.density(conditioned) ** 2), receiver, num_nodes
-        )
+        weights = self.radial(conditioned)
+        edge_density = torch.tanh(self.density(conditioned) ** 2)
+        if edge_envelope is not None:
+            weights = weights * edge_envelope
+            edge_density = edge_density * edge_envelope
+        weights = weights.reshape(-1, self.num_paths, self.num_up_features)
+        density = segment_sum(edge_density, receiver, num_nodes)
         channels = up[..., self.to_channels].reshape(
             -1, self.num_up_features, self.up_width
         )
