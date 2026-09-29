@@ -21,7 +21,10 @@ measured against the anchor, that is 768 weights where the trained model has
 1792.
 
 **The division by the neighbour count comes after the linear**, and it is the
-average itself, not its square root.
+average itself, not its square root. A block with a learned density divides
+by ``1 + sum over its edges of tanh(f(r)^2)`` instead, where ``f`` is one
+linear map of the radial embedding: each atom's own count, softened, in place
+of the dataset's average.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ from mace_core.kernels.paths import channelwise_paths
 from mace_core.kernels.precision import Precision
 from torch import Tensor, nn
 
+from mace_torch.kernels import segment_sum
 from mace_torch.nn.layout import (
     expanded_irreps,
     inverse_layout_index,
@@ -72,6 +76,7 @@ class _Convolution(nn.Module):
         avg_num_neighbors: float,
         radial_hidden=DEFAULT_RADIAL_HIDDEN,
         precision: Precision = "float64",
+        learned_density: bool = False,
     ) -> None:
         super().__init__()
         paths = channelwise_paths(irreps_node, irreps_edge, irreps_target)
@@ -120,6 +125,11 @@ class _Convolution(nn.Module):
         self.register_buffer(
             "neighbours", torch.tensor(float(avg_num_neighbors)), persistent=False
         )
+        # One linear map of the radial embedding to one number per edge, with
+        # no hidden layer: what the frozen tree's density blocks fit.
+        self.density = (
+            RadialMLP(num_radial, (), 1, precision) if learned_density else None
+        )
 
     def forward(
         self,
@@ -142,7 +152,11 @@ class _Convolution(nn.Module):
             mapped, edge_attributes, weights, sender, receiver, num_nodes
         )
         message = message.reshape(num_nodes, -1)[..., self.from_paths]
-        return self.linear(message) / self.neighbours
+        if self.density is None:
+            return self.linear(message) / self.neighbours
+        edge_density = torch.tanh(self.density(edge_radial) ** 2)
+        density = segment_sum(edge_density, receiver, num_nodes)
+        return self.linear(message) / (density + 1.0)
 
     def to_canonical(self) -> dict[str, Tensor]:
         """The neighbour normalization, which the checkpoint has to carry.
@@ -176,6 +190,8 @@ class InteractionBlock(nn.Module):
         avg_num_neighbors: The density normalization.
         radial_hidden: The radial network's hidden widths.
         precision: The dtype every op is built at.
+        learned_density: Normalize by a density learned per atom rather than
+            by ``avg_num_neighbors``.
     """
 
     def __init__(
@@ -190,6 +206,7 @@ class InteractionBlock(nn.Module):
         avg_num_neighbors: float = 1.0,
         radial_hidden=DEFAULT_RADIAL_HIDDEN,
         precision: Precision = "float64",
+        learned_density: bool = False,
     ) -> None:
         super().__init__()
         self.body = _Convolution(
@@ -202,6 +219,7 @@ class InteractionBlock(nn.Module):
             avg_num_neighbors,
             radial_hidden,
             precision,
+            learned_density,
         )
         self.skip = backend.make_fully_connected_tp(
             FullyConnectedTPDescriptor(
@@ -259,6 +277,7 @@ class ResidualInteractionBlock(nn.Module):
         avg_num_neighbors: float = 1.0,
         radial_hidden=DEFAULT_RADIAL_HIDDEN,
         precision: Precision = "float64",
+        learned_density: bool = False,
     ) -> None:
         super().__init__()
         self.body = _Convolution(
@@ -271,6 +290,7 @@ class ResidualInteractionBlock(nn.Module):
             avg_num_neighbors,
             radial_hidden,
             precision,
+            learned_density,
         )
         self.skip = backend.make_fully_connected_tp(
             FullyConnectedTPDescriptor(

@@ -81,6 +81,10 @@ class MACEBackbone(nn.Module):
             interaction is ``RealAgnosticResidualInteractionBlock``, its default
             and what MACE-MP-0 was trained with; otherwise the first layer's
             skip is applied to the message and replaces it.
+        learned_density_first_layer: Normalize the first layer's messages by a
+            density learned per atom rather than by the average neighbour
+            count, as the frozen tree's density blocks do.
+        learned_density: The same for every later layer.
         full_last_layer: Keep every irrep in the last layer's features rather
             than only its scalars. A model that reads more than invariants off
             the last layer needs it: a charge-aware model reads dipoles there.
@@ -110,6 +114,8 @@ class MACEBackbone(nn.Module):
         locality: Callable[[Tensor, Mapping[str, Any]], Tensor] | None = None,
         node_inputs: Sequence[InputSpec] = (),
         residual_first_layer: bool = False,
+        learned_density_first_layer: bool = False,
+        learned_density: bool = False,
         full_last_layer: bool = False,
         element_agnostic_product: bool = False,
         edge_axes: tuple[int, int, int] = (0, 1, 2),
@@ -171,6 +177,7 @@ class MACEBackbone(nn.Module):
             node_per_channel = self.embedding_irreps if layer == 0 else hidden_irreps
             last = layer == num_layers - 1 and not full_last_layer
             product_per_channel = "0e" if last else hidden_irreps
+            density = learned_density_first_layer if layer == 0 else learned_density
             if layer == 0 and not residual_first_layer:
                 interactions.append(
                     InteractionBlock(
@@ -183,6 +190,7 @@ class MACEBackbone(nn.Module):
                         num_elements=len(self.atomic_numbers),
                         avg_num_neighbors=avg_num_neighbors,
                         precision=precision,
+                        learned_density=density,
                     )
                 )
             else:
@@ -198,6 +206,7 @@ class MACEBackbone(nn.Module):
                         num_elements=len(self.atomic_numbers),
                         avg_num_neighbors=avg_num_neighbors,
                         precision=precision,
+                        learned_density=density,
                     )
                 )
             products.append(
