@@ -17,8 +17,9 @@ from typing import Any
 import pytest
 import torch
 from conftest import fp64_only
+from mace_core.config.precision import PrecisionConfig
 from mace_core.elements import AtomicNumberTable, ResolvedE0s
-from mace_core.kernels.precision import Precision, PrecisionConfig
+from mace_core.kernels.precision import Precision
 from mace_torch.backends.reference import ReferenceBackend
 from mace_torch.models import EnergyOutputHead, ScaleShiftSpec
 from mace_torch.nn import MACEBackbone

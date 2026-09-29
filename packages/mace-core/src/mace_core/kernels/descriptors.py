@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from mace_core.clebsch_gordan.irreps import Irreps
-from mace_core.kernels.precision import Precision
+from mace_core.kernels.precision import Precision, widest
 
 #: Which radial basis a descriptor asks for. Named so a caller can type its
 #: own parameter as the enumeration rather than as a bare string, which is
@@ -41,9 +41,21 @@ class Descriptor:
 
     Attributes:
         precision: The dtype the op computes in, by name.
+        accumulate: The floor its reductions accumulate in, when it is wider
+            than ``precision``. ``None`` means the same. A backend with a wider
+            accumulator uses it as that; the others are handed a descriptor
+            whose ``precision`` already meets it.
     """
 
     precision: Precision = "float64"
+    accumulate: Precision | None = None
+
+    @property
+    def accumulate_floor(self) -> Precision:
+        """The dtype this op's reductions accumulate in at least."""
+        if self.accumulate is None:
+            return self.precision
+        return widest(self.precision, self.accumulate)
 
     @property
     def weight_numel(self) -> int:
