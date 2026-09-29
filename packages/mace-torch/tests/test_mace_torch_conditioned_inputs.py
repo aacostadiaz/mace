@@ -15,8 +15,8 @@ import numpy as np
 import pytest
 import torch
 from conftest import fp64_only
-from mace_core.observables import InputSpec
-from mace_core.observables.derivatives import derivation_mode, derivative_name
+from mace_core.observables import InputSpec, ObservableSpec
+from mace_core.observables.derivatives import derivation_mode
 from mace_torch_engine_fixtures import (
     NODE_INPUT,
     build_engine,
@@ -56,10 +56,25 @@ def test_the_derivation_mode_follows_from_the_target():
 
 
 @fp64_only
-def test_a_declared_input_gets_its_name_from_the_same_rule_as_forces():
-    assert derivative_name("energy", "pos") == "forces"
-    assert derivative_name("energy", "magmom") == "magforces"
-    assert derivative_name("energy", "charge") == "d_energy_d_charge"
+def test_a_declared_input_gets_its_name_from_the_energy_declaration():
+    """A pair with a name of its own says so in the file, beside its sign.
+
+    Which is what makes `magforces` reachable with no code here: the rule
+    generates the third name, and the first two are declared.
+    """
+    energy = ObservableSpec(
+        name="energy",
+        irreps="0e",
+        per_atom=False,
+        units="eV",
+        derivatives=[
+            {"wrt": "pos", "name": "forces", "sign": -1},
+            {"wrt": "magmom", "name": "magforces", "sign": -1},
+        ],
+    )
+    assert energy.derivative_name("pos") == "forces"
+    assert energy.derivative_name("magmom") == "magforces"
+    assert energy.derivative_name("charge") == "d_energy_d_charge"
 
 
 @fp64_only

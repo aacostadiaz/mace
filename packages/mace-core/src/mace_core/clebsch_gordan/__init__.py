@@ -69,6 +69,8 @@ legacy cueq-only path produces.
 
 from mace_core.clebsch_gordan.coefficients import clebsch_gordan, wigner_3j_complex
 from mace_core.clebsch_gordan.conversion import (
+    PROJECTION_TOLERANCE,
+    BasisConversionError,
     from_canonical,
     full_to_reduced,
     ir_mul_to_mul_ir,
@@ -77,7 +79,11 @@ from mace_core.clebsch_gordan.conversion import (
     to_canonical,
 )
 from mace_core.clebsch_gordan.irreps import Irrep, Irreps, IrrepsError
-from mace_core.clebsch_gordan.real_basis import real_basis_change, wigner_3j_real
+from mace_core.clebsch_gordan.real_basis import (
+    real_basis_change,
+    symmetric_matrix_basis,
+    wigner_3j_real,
+)
 from mace_core.clebsch_gordan.reduced_basis import (
     CouplingTree,
     full_path_labels,
@@ -88,6 +94,8 @@ from mace_core.clebsch_gordan.reduced_basis import (
 )
 
 __all__ = [
+    "PROJECTION_TOLERANCE",
+    "BasisConversionError",
     "CouplingTree",
     "Irrep",
     "Irreps",
@@ -104,6 +112,7 @@ __all__ = [
     "real_basis_change",
     "reduced_symmetric_tensor_product_basis",
     "reduced_to_full",
+    "symmetric_matrix_basis",
     "to_canonical",
     "wigner_3j_complex",
     "wigner_3j_real",

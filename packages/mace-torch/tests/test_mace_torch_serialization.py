@@ -12,12 +12,13 @@ replaces a way a checkpoint can load and quietly give a different model.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 import torch
 from conftest import fp64_only
 from mace_core.elements import AtomicNumberTable, ResolvedE0s
-from mace_core.kernels.precision import PrecisionConfig
+from mace_core.kernels.precision import Precision, PrecisionConfig
 from mace_torch.backends.reference import ReferenceBackend
 from mace_torch.models import EnergyOutputHead, ScaleShiftSpec
 from mace_torch.nn import MACEBackbone
@@ -31,7 +32,7 @@ from mace_torch.serialization import (
 )
 from safetensors.torch import load_file, save_file
 
-SETTINGS = dict(
+SETTINGS: dict[str, Any] = dict(
     atomic_numbers=[1, 8],
     num_layers=2,
     num_features=4,
@@ -42,7 +43,7 @@ SETTINGS = dict(
 )
 
 
-def build(config):
+def build(config: dict[str, Any]) -> MACEBackbone:
     return MACEBackbone(ReferenceBackend(), **config)
 
 
@@ -82,6 +83,37 @@ def test_a_model_survives_the_round_trip(tmp_path):
     for index, (first, second) in enumerate(zip(before, after, strict=True)):
         assert torch.equal(first, second), f"layer {index} changed"
     assert float(before[0].abs().max()) > 1e-6, "the model computes nothing"
+
+
+@fp64_only
+def test_the_neighbour_normalization_travels_with_the_weights(tmp_path):
+    """Rebuilt with a different value, the model loads the recorded one.
+
+    The messages are divided by it, so a checkpoint that dropped it would load
+    into whatever the builder happened to pass and compute a different
+    function without a word. The round trip above cannot see that, because it
+    rebuilds with the very same settings.
+    """
+    import numpy as np
+    from mace_core.neighbors import get_neighborhood
+
+    model = trained()
+    save_checkpoint(tmp_path / "anchor", model, dict(SETTINGS))
+    restored = load_checkpoint(
+        tmp_path / "anchor", lambda config: build({**config, "avg_num_neighbors": 1.0})
+    )
+    positions = np.array([[0.0, 0.0, 0.0], [0.95, 0.0, 0.0], [-0.24, 0.93, 0.0]])
+    neighborhood = get_neighborhood(positions, 5.0, (False, False, False), None)
+    graph = {
+        "positions": torch.tensor(positions),
+        "atomic_numbers": torch.tensor([8, 1, 1]),
+        "edge_index": torch.tensor(neighborhood.edge_index),
+        "shifts": torch.tensor(neighborhood.shifts),
+    }
+    for index, (first, second) in enumerate(
+        zip(model(graph), restored(graph), strict=True)
+    ):
+        assert torch.equal(first, second), f"layer {index} changed"
 
 
 @fp64_only
@@ -167,8 +199,9 @@ def test_a_model_of_a_different_shape_is_refused(tmp_path):
     model = trained()
     save_checkpoint(tmp_path / "anchor", model, dict(SETTINGS))
 
-    def build_deeper(config):
-        return MACEBackbone(ReferenceBackend(), **{**config, "num_layers": 3})
+    def build_deeper(config: dict[str, Any]) -> MACEBackbone:
+        deeper: dict[str, Any] = {**config, "num_layers": 3}
+        return MACEBackbone(ReferenceBackend(), **deeper)
 
     with pytest.raises(CheckpointError, match=r"products\.1\.contraction"):
         load_checkpoint(tmp_path / "anchor", build_deeper)
@@ -202,7 +235,7 @@ def test_a_file_missing_an_operator_entirely_is_refused(tmp_path):
         load_checkpoint(tmp_path / "anchor", build)
 
 
-def energy_head(precision: str):
+def energy_head(precision: Precision) -> EnergyOutputHead:
     return EnergyOutputHead(
         ResolvedE0s({"default": {1: -13.6, 8: -2040.0}}),
         ["default"],

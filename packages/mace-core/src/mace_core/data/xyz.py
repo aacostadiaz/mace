@@ -28,12 +28,15 @@ from mace_core.data.configuration import (
     Configuration,
 )
 from mace_core.data.keys import KeySpecification
+from mace_core.elements.default_keys import DefaultKeys
 
 __all__ = [
     "ISOLATED_ATOM_CONFIG_TYPE",
     "ParsedConfigurations",
+    "atoms_from_configuration",
     "configuration_from_atoms",
     "read_configurations",
+    "write_configurations",
 ]
 
 logger = logging.getLogger(__name__)
@@ -52,15 +55,26 @@ class _ReservedKey:
             happens, but the two are different things: one is ase's calculator
             property, the other is what this stack calls the label.
         rewritten: What the key is rewritten to for the duration of the parse.
+            Read off the default key table rather than spelled again: the
+            rewrite has to land on a key the parser then reads, and a second
+            copy of ``REF_energy`` here would go on working while the table
+            moved underneath it.
         getter: The ``Atoms`` method that recovers the value ase moved into
             the calculator.
-        stored_in: Which of ``info`` / ``arrays`` the value belongs in.
+        stored_in: Which of ``info`` / ``arrays`` the value belongs in. ase's
+            own two words, because this is the attribute the value is read from
+            and written to; the format-neutral spelling of the same split is
+            ``graph`` and ``atom``, in :mod:`mace_core.data.keys`.
     """
 
     reserved: str
     rewritten: str
     getter: str
     stored_in: str
+    #: Whether the key convention's own default is the reserved spelling. Then
+    #: every file is read through it, so it is recovered quietly, and only from
+    #: a file whose calculator holds the value.
+    convention: bool = False
 
 
 #: Configuring one of these as the file key for a label stopped being safe in
@@ -68,9 +82,16 @@ class _ReservedKey:
 #: ``atoms.calc.results`` instead of into ``atoms.info``, so a parser looking
 #: in ``info`` finds nothing at all.
 _RESERVED_KEYS: dict[str, _ReservedKey] = {
-    "energy": _ReservedKey("energy", "REF_energy", "get_potential_energy", "info"),
-    "forces": _ReservedKey("forces", "REF_forces", "get_forces", "arrays"),
-    "stress": _ReservedKey("stress", "REF_stress", "get_stress", "info"),
+    "energy": _ReservedKey(
+        "energy", DefaultKeys.ENERGY.value, "get_potential_energy", "info"
+    ),
+    "forces": _ReservedKey("forces", DefaultKeys.FORCES.value, "get_forces", "arrays"),
+    "stress": _ReservedKey("stress", DefaultKeys.STRESS.value, "get_stress", "info"),
+    # The convention's dipole key is ase's own name for the calculator's
+    # dipole, so a dipole written under it is only ever in the calculator.
+    "dipole": _ReservedKey(
+        "dipole", "REF_dipole", "get_dipole_moment", "info", convention=True
+    ),
 }
 
 
@@ -119,11 +140,11 @@ def configuration_from_atoms(
         for name in key_spec.property_names()
     }
 
-    for name, file_key in key_spec.info_keys.items():
+    for name, file_key in key_spec.graph_keys.items():
         properties[name] = atoms.info.get(file_key)
         if file_key not in atoms.info:
             property_weights[name] = 0.0
-    for name, file_key in key_spec.arrays_keys.items():
+    for name, file_key in key_spec.atom_keys.items():
         properties[name] = atoms.arrays.get(file_key)
         if file_key not in atoms.arrays:
             property_weights[name] = 0.0
@@ -139,6 +160,60 @@ def configuration_from_atoms(
         config_type=config_type,
         head=head_name,
     )
+
+
+def atoms_from_configuration(
+    configuration: Configuration, key_spec: KeySpecification
+) -> Atoms:
+    """The inverse of :func:`configuration_from_atoms`, under the same keys.
+
+    A label the structure does not carry is left out rather than written, and a
+    property weight is written only where it is not the ``1.0`` a reader
+    assumes. The structure weight is written whole, so a config-type weight the
+    reader folded into it survives, and is not applied a second time as long as
+    the reader is given no config-type weights.
+    """
+    atoms = Atoms(
+        numbers=np.asarray(configuration.atomic_numbers),
+        positions=np.asarray(configuration.positions),
+        cell=configuration.cell,
+        pbc=configuration.pbc if configuration.pbc is not None else False,
+    )
+    for name, file_key in key_spec.graph_keys.items():
+        value = configuration.properties.get(name)
+        if value is not None:
+            atoms.info[file_key] = value
+    for name, file_key in key_spec.atom_keys.items():
+        value = configuration.properties.get(name)
+        if value is not None:
+            atoms.arrays[file_key] = np.asarray(value)
+    for name, weight in configuration.property_weights.items():
+        if configuration.properties.get(name) is not None and weight != 1.0:
+            atoms.info[f"config_{name}_weight"] = weight
+    if configuration.weight != 1.0:
+        atoms.info["config_weight"] = configuration.weight
+    atoms.info["config_type"] = configuration.config_type
+    return atoms
+
+
+def write_configurations(
+    path: str | Path,
+    configurations: Sequence[Configuration],
+    key_spec: KeySpecification,
+) -> Path:
+    """Write structures as extended XYZ, readable back under ``key_spec``.
+
+    Positions and per-atom labels are written to eight decimals, which is what
+    extended XYZ does. A structure read from such a file is therefore written
+    back exactly, and one computed in memory is not.
+    """
+    path = Path(path)
+    ase.io.write(
+        str(path),
+        [atoms_from_configuration(item, key_spec) for item in configurations],
+        format="extxyz",
+    )
+    return path
 
 
 def read_configurations(
@@ -186,14 +261,14 @@ def read_configurations(
 
     _check_something_is_labelled(resolved, atoms_list, str(path), no_data_ok)
 
-    head_key = resolved.info_keys.get("head", "head")
+    head_key = resolved.graph_keys.get("head", "head")
     for atoms in atoms_list:
         atoms.info[head_key] = head_name
 
     isolated_atom_energies: dict[int, float] = {}
     if extract_isolated_atom_energies:
         isolated_atom_energies = _extract_isolated_atom_energies(
-            atoms_list, resolved.info_keys["energy"]
+            atoms_list, resolved.graph_keys["energy"]
         )
         if isolated_atom_energies:
             logger.info(
@@ -232,22 +307,30 @@ def _rewrite_reserved_keys(
     """
     for name, reserved in _RESERVED_KEYS.items():
         store = (
-            key_spec.arrays_keys
+            key_spec.atom_keys
             if reserved.stored_in == "arrays"
-            else key_spec.info_keys
+            else key_spec.graph_keys
         )
         if store.get(name) != reserved.reserved:
             continue
-        logger.warning(
-            "Reading %s from the key %r is not safe with ase 3.23 and newer: "
-            "ase reads that key back into the calculator, not into the "
-            "structure. Rewriting it to %r and recovering the values from the "
-            "calculator. Label the file with %r to read it directly.",
-            name,
-            reserved.reserved,
-            reserved.rewritten,
-            reserved.rewritten,
-        )
+        if reserved.convention:
+            if not any(
+                atoms.calc is not None and name in atoms.calc.results
+                for atoms in atoms_list
+            ):
+                continue
+        else:
+            logger.warning(
+                "Reading %s from the key %r is not safe with ase 3.23 and "
+                "newer: ase reads that key back into the calculator, not into "
+                "the structure. Rewriting it to %r and recovering the values "
+                "from the calculator. Label the file with %r to read it "
+                "directly.",
+                name,
+                reserved.reserved,
+                reserved.rewritten,
+                reserved.rewritten,
+            )
         store[name] = reserved.rewritten
         for atoms in atoms_list:
             try:
@@ -270,17 +353,17 @@ def _check_something_is_labelled(
     path: str,
     no_data_ok: bool,
 ) -> None:
-    if "energy" not in key_spec.info_keys or "forces" not in key_spec.arrays_keys:
+    if "energy" not in key_spec.graph_keys or "forces" not in key_spec.atom_keys:
         raise ValueError(
             "the key specification names no energy key, no forces key, or "
             "neither, so there is nothing to look for in the file. Build it "
             "with KeySpecification.from_defaults() and override from there."
         )
-    energy_key = key_spec.info_keys["energy"]
-    forces_key = key_spec.arrays_keys["forces"]
+    energy_key = key_spec.graph_keys["energy"]
+    forces_key = key_spec.atom_keys["forces"]
     # A specification with no dipole entry still has to name a key in the
     # message below, and this is the name legacy reports.
-    dipole_key = key_spec.info_keys.get("dipole", "REF_dipole")
+    dipole_key = key_spec.graph_keys.get("dipole", "REF_dipole")
 
     has_energy = any(energy_key in atoms.info for atoms in atoms_list)
     has_forces = any(forces_key in atoms.arrays for atoms in atoms_list)

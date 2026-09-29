@@ -14,6 +14,9 @@ by holding it.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import cast
+
 import numpy as np
 import torch
 from mace_core.clebsch_gordan.irreps import Irreps
@@ -25,6 +28,8 @@ from mace_core.clebsch_gordan.reduced_basis import (
 from mace_core.kernels.canonical import (
     KERNEL_SPEC_VERSION,
     contraction_path_labels,
+    fully_connected_tp_weight_scale,
+    linear_weight_scale,
 )
 from mace_core.kernels.capabilities import BackendCapabilities
 from mace_core.kernels.descriptors import (
@@ -40,10 +45,12 @@ from mace_core.kernels.paths import channelwise_paths
 from mace_core.kernels.protocol import DISPATCHED_OPS, REFERENCE_ONLY_OPS
 from torch import Tensor, nn
 
+from mace_torch.backends.layout import Layout
 from mace_torch.backends.reference.spherical_harmonics import spherical_harmonics
 from mace_torch.kernels.ops import (
     channelwise_tp_conv,
     equivariant_linear,
+    monomial_basis,
     segment_sum,
     symmetric_contraction,
 )
@@ -84,11 +91,82 @@ def _linear_plan(descriptor: LinearDescriptor):
         for out_slice, out_ir in target_irreps.slices():
             if out_ir.degree == 0 and out_ir.parity == 1:
                 bias_rows.append(out_slice.start)
+    # The entries above are canonical. In another layout the same map reads
+    # and writes other positions, so the tables are relabelled here, once,
+    # and the op costs the same in either.
+    layout = Layout(descriptor.layout)
+    to_out = layout.positions(descriptor.irreps_out)
+    to_in = layout.positions(descriptor.irreps_in)
+    rows = [int(to_out[row]) for row in rows]
+    columns = [int(to_in[column]) for column in columns]
+    bias_rows = [int(to_out[row]) for row in bias_rows]
     return rows, columns, sources, weight, bias_rows
+
+
+def _linear_weight_scales(irreps_in: str, irreps_out: str) -> list[float]:
+    """The canonical scale of every weight of a linear plan, in plan order.
+
+    One entry per weight, so the draw is a multiplication rather than a loop
+    over paths. The order is `_linear_plan`'s: output copies outermost, and
+    within one output copy the matching input copies in declaration order.
+    """
+    source = Irreps.parse(irreps_in)
+    target = Irreps.parse(irreps_out)
+    scales: list[float] = []
+    for out_multiplicity, out_irrep in target:
+        scale = linear_weight_scale(irreps_in, out_irrep)
+        for _ in range(out_multiplicity):
+            for in_multiplicity, in_irrep in source:
+                if in_irrep != out_irrep:
+                    continue
+                scales.extend([scale] * in_multiplicity)
+    return scales
+
+
+def _skip_weight_scales(descriptor: FullyConnectedTPDescriptor) -> list[float]:
+    """The same, for the skip connection, whose fan-in counts both inputs."""
+    source = Irreps.parse(descriptor.irreps_in1)
+    target = Irreps.parse(descriptor.irreps_out)
+    num_scalars = Irreps.parse(descriptor.irreps_in2).dimension
+    scales: list[float] = []
+    for out_multiplicity, out_irrep in target:
+        for _ in range(out_multiplicity):
+            for in_multiplicity, in_irrep in source:
+                if in_irrep != out_irrep:
+                    continue
+                scale = fully_connected_tp_weight_scale(in_multiplicity, num_scalars)
+                scales.extend([scale] * in_multiplicity)
+    return scales
+
+
+def _draw(like: Tensor, seed: int) -> Tensor:
+    """A standard normal shaped, typed and placed like ``like``.
+
+    Its own generator rather than the global one: a model's weights must not
+    depend on how many random numbers anything else drew first, which is what
+    makes a run reproducible from its recorded seed.
+
+    Drawn on the host and moved, never drawn on the device. A device generator
+    seeded the same way produces different numbers, so drawing where the model
+    happens to live would make a recorded seed rebuild a different model on a
+    different machine. It is moved rather than left behind because a model that
+    has been sent to a device has its buffers there, and multiplying a host
+    tensor by one of them is a device mismatch.
+    """
+    generator = torch.Generator().manual_seed(seed)
+    return torch.randn(like.shape, generator=generator, dtype=torch.float64).to(
+        device=like.device, dtype=like.dtype
+    )
 
 
 class ReferenceLinear(nn.Module):
     """An equivariant linear map with first-class bias."""
+
+    row: Tensor
+    column: Tensor
+    source: Tensor
+    bias_row: Tensor
+    weight_scale: Tensor
 
     def __init__(self, descriptor: LinearDescriptor) -> None:
         super().__init__()
@@ -102,6 +180,14 @@ class ReferenceLinear(nn.Module):
         self.register_buffer("bias_row", torch.tensor(bias_rows, dtype=torch.long))
         self.weight = nn.Parameter(torch.zeros(count, dtype=dtype))
         self.bias = nn.Parameter(torch.zeros(len(bias_rows), dtype=dtype))
+        self.register_buffer(
+            "weight_scale",
+            torch.tensor(
+                _linear_weight_scales(descriptor.irreps_in, descriptor.irreps_out),
+                dtype=dtype,
+            ),
+            persistent=False,
+        )
 
     def forward(self, features: Tensor) -> Tensor:
         return equivariant_linear(
@@ -114,6 +200,17 @@ class ReferenceLinear(nn.Module):
             self.bias_row,
             self.dim_out,
         )
+
+    def initialize_weights(self, seed: int) -> None:
+        """A standard normal, scaled per path. The bias starts at zero.
+
+        A bias is an offset on the scalar outputs, and starting it anywhere
+        other than zero would shift the model's energy before it has seen a
+        structure. The frozen tree's linear does the same.
+        """
+        with torch.no_grad():
+            self.weight.copy_(_draw(self.weight, seed) * self.weight_scale)
+            self.bias.zero_()
 
     def to_canonical(self) -> dict[str, Tensor]:
         """A view. The reference holds the canonical layout already."""
@@ -143,18 +240,17 @@ class _ConstantTensors(nn.Module):
     def __len__(self) -> int:
         return self.count
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Tensor]:
         return iter(getattr(self, f"table_{p}") for p in range(self.count))
 
 
 class ReferenceSymmetricContraction(nn.Module):
     """The many-body contraction, over the basis the descriptor records.
 
-    One contraction per output irrep, concatenated on the component axis. They
-    cannot share a stacked basis: each output irrep has its own component count,
-    so stacking them would be joining arrays whose second axis differs. The
-    frozen tree reaches the same shape by holding one `Contraction` per output
-    irrep, and this is that, with the loop kept explicit.
+    One basis per output irrep and body order, each rewritten over the input's
+    symmetric monomials. The kernel takes them all in one call, so the monomials
+    are formed once and shared by every output irrep, and the results are
+    concatenated on the component axis.
     """
 
     def __init__(self, descriptor: SymmetricContractionDescriptor) -> None:
@@ -173,8 +269,19 @@ class ReferenceSymmetricContraction(nn.Module):
             group, tables = [], []
             for order in range(1, descriptor.correlation + 1):
                 array = build(descriptor.irreps_in, order, target)[target]
-                flat = array.reshape(array.shape[0], array.shape[1], -1)
-                tables.append(torch.tensor(flat, dtype=dtype))
+                # The trailing extent is computed rather than inferred with
+                # `-1`: an output irrep no path of this body order reaches has
+                # zero paths, and numpy cannot infer a dimension of an empty
+                # array. A `2e` output is exactly that at body order one.
+                trailing = int(np.prod(array.shape[2:])) if array.ndim > 2 else 1
+                flat = array.reshape(array.shape[0], array.shape[1], trailing)
+                # Rewritten over the input's symmetric monomials in fp64 and
+                # only then cast, so the symmetrization rounds once.
+                tables.append(
+                    monomial_basis(torch.tensor(flat, dtype=torch.float64), order).to(
+                        dtype
+                    )
+                )
                 group.append(
                     nn.Parameter(
                         torch.zeros(
@@ -189,26 +296,51 @@ class ReferenceSymmetricContraction(nn.Module):
             bases.append(_ConstantTensors(tables))
         self.weights = nn.ParameterList(weights)
         self.bases = nn.ModuleList(bases)
+        self.in_terms = Layout.terms(descriptor.irreps_in)
+        self.out_terms = Layout.terms(descriptor.irreps_out)
 
-    def _group(self, position: int) -> list[Tensor]:
-        """One output irrep's weights, by integer index.
+    def initialize_weights(self, seed: int) -> None:
+        """A standard normal, unscaled.
 
-        Flat storage with integer indexing rather than a slice of the
-        `ParameterList`: slicing one goes through `slice.indices`, a C builtin
-        that `torch.compile` cannot trace, and the break lands in the middle of
-        the backbone rather than here.
+        The symmetric contraction is the one weighted op the canonical layout
+        applies no factor to, so the draw is the frozen tree's own: one normal
+        per element, path and channel. Each tensor of the flat list gets its
+        own offset, or the body orders of one output irrep would start equal.
         """
-        base = position * self.orders
-        return [self.weights[base + order] for order in range(self.orders)]
+        with torch.no_grad():
+            for position, parameter in enumerate(self.weights):
+                parameter.copy_(_draw(parameter, seed + position))
+
+    def _all_weights(self) -> list[Tensor]:
+        """The weights, output irrep outermost, by integer index.
+
+        Integer indexing rather than iterating or slicing the `ParameterList`:
+        slicing one goes through `slice.indices`, a C builtin that
+        `torch.compile` cannot trace, and the break lands in the middle of the
+        backbone rather than here.
+        """
+        return [self.weights[position] for position in range(len(self.weights))]
 
     def forward(self, features: Tensor, element: Tensor) -> Tensor:
-        pieces = [
-            symmetric_contraction(
-                features, self._group(position), list(tables), element
-            )
-            for position, tables in enumerate(self.bases)
-        ]
-        return torch.cat(pieces, dim=-1)
+        """``[n_nodes, C * dim_in]`` in, ``[n_nodes, C * dim_out]`` out.
+
+        The kernel works channel by channel, so the grouped values are put into
+        channel-major order for it and back afterwards.
+        """
+        descriptor = self.descriptor
+        layout = Layout(descriptor.layout)
+        channels = layout.channel_major(
+            features, self.in_terms, descriptor.num_features
+        )
+        # `nn.ModuleList` erases what it holds, so the element type has to be
+        # said here. It is the one thing put into `self.bases`, two lines of
+        # the constructor away.
+        bases = cast("list[_ConstantTensors]", list(self.bases))
+        tables = [table for group in bases for table in group]
+        joined = symmetric_contraction(
+            channels, self._all_weights(), tables, element, self.orders
+        )
+        return layout.grouped(joined, self.out_terms)
 
     def canonical_metadata(self) -> dict[str, object]:
         """What each weight on the path axis multiplies, by name.
@@ -232,22 +364,40 @@ class ReferenceSymmetricContraction(nn.Module):
         }
 
     def to_canonical(self) -> dict[str, Tensor]:
-        """The flat ``[Z, A, mul]`` array, joined over irreps and body orders.
+        """The flat ``[Z, A, mul]`` array, in the pinned path order.
 
-        The per-piece tensors are contiguous slices of it in the pinned order,
-        so this is a concatenate rather than a conversion.
+        **Body order outermost, output irrep within it**, which is the order
+        the path enumeration walks and therefore the order on disk. The weights
+        are stored the other way round, output irrep outermost, because that is
+        how the forward consumes them, so this reorders rather than simply
+        concatenating. Emitting the storage order instead would write a file
+        whose paths are the canonical ones permuted, and the round trip through
+        this same object would not notice: it splits by the counts it wrote.
         """
+        ordered = self._canonical_order()
         return {
-            "weight": torch.cat([w.detach() for w in self.weights], dim=1),
-            "path_counts": torch.tensor([w.shape[1] for w in self.weights]),
+            "weight": torch.cat([w.detach() for w in ordered], dim=1),
+            "path_counts": torch.tensor([w.shape[1] for w in ordered]),
         }
 
     def load_canonical(self, state: dict[str, Tensor]) -> None:
         counts = [int(n) for n in state["path_counts"]]
         pieces = torch.split(state["weight"], counts, dim=1)
         with torch.no_grad():
-            for parameter, piece in zip(self.weights, pieces, strict=True):
+            for parameter, piece in zip(self._canonical_order(), pieces, strict=True):
                 parameter.copy_(piece)
+
+    def _canonical_order(self) -> list[Tensor]:
+        """The weight tensors in the order the file has them.
+
+        Body order ascending, and within one body order the output irreps in
+        declaration order. `self.weights` is the transpose of this.
+        """
+        return [
+            self.weights[position * self.orders + order]
+            for order in range(self.orders)
+            for position in range(len(self.targets))
+        ]
 
 
 def _coupling_coefficients(descriptor: ChannelwiseTPConvDescriptor) -> np.ndarray:
@@ -299,21 +449,34 @@ def _coupling_coefficients(descriptor: ChannelwiseTPConvDescriptor) -> np.ndarra
 
 
 class ReferenceChannelwiseTPConv(nn.Module):
+    #: Annotated because `register_buffer` alone leaves it typed as a `Module`,
+    #: and then reading its shape reads as subscripting a module.
+    coefficients: Tensor
+
     """The message-passing tensor product. Node-level, always."""
 
     def __init__(self, descriptor: ChannelwiseTPConvDescriptor) -> None:
         super().__init__()
         self.descriptor = descriptor
         dtype = _TORCH_DTYPE[descriptor.precision]
-        coefficients = _coupling_coefficients(descriptor)
+        # Every path owns its own block of output components, so the paths'
+        # coefficients sum into one array without overlapping.
+        coefficients = _coupling_coefficients(descriptor).sum(axis=0)
         self.register_buffer(
             "coefficients", torch.tensor(coefficients, dtype=dtype), persistent=False
         )
+        paths = channelwise_paths(
+            descriptor.irreps_node, descriptor.irreps_edge, descriptor.irreps_out
+        )
+        self.path_widths = [path.irrep.dimension for path in paths]
+        self.layout = Layout(descriptor.layout)
+        self.node_terms = Layout.terms(descriptor.irreps_node)
+        self.path_terms = tuple((1, width) for width in self.path_widths)
 
     @property
     def num_paths(self) -> int:
         """How many weights the external radial MLP has to produce."""
-        return int(self.coefficients.shape[0])
+        return len(self.path_widths)
 
     def forward(
         self,
@@ -324,18 +487,34 @@ class ReferenceChannelwiseTPConv(nn.Module):
         receiver: Tensor,
         num_nodes: int,
     ) -> Tensor:
-        return channelwise_tp_conv(
-            node_features,
+        """Grouped node features in, one grouped block per path out.
+
+        The kernel works channel by channel, so the grouped node features are
+        put into channel-major order for it, and its channel-major result back
+        into one block per path.
+        """
+        channels = self.layout.channel_major(
+            node_features, self.node_terms, self.descriptor.num_features
+        )
+        message = channelwise_tp_conv(
+            channels,
             edge_attributes,
             radial_weights,
             self.coefficients,
+            self.path_widths,
             sender,
             receiver,
             num_nodes,
         )
+        return self.layout.grouped(message, self.path_terms)
 
 
 class ReferenceFullyConnectedTP(nn.Module):
+    row: Tensor
+    column: Tensor
+    source: Tensor
+    weight_scale: Tensor
+
     """The skip connection's tensor product against the element attributes.
 
     Only the case the models use is built: the second input is scalars, the
@@ -362,6 +541,7 @@ class ReferenceFullyConnectedTP(nn.Module):
                 irreps_in=descriptor.irreps_in1,
                 irreps_out=descriptor.irreps_out,
                 precision=descriptor.precision,
+                layout=descriptor.layout,
             )
         )
         self.num_scalars = second.dimension
@@ -370,11 +550,20 @@ class ReferenceFullyConnectedTP(nn.Module):
         self.register_buffer("column", torch.tensor(columns, dtype=torch.long))
         self.register_buffer("source", torch.tensor(sources, dtype=torch.long))
         self.weight = nn.Parameter(torch.zeros(self.num_scalars, count, dtype=dtype))
+        self.register_buffer(
+            "weight_scale",
+            torch.tensor(_skip_weight_scales(descriptor), dtype=dtype),
+            persistent=False,
+        )
 
     def forward(self, features: Tensor, attributes: Tensor) -> Tensor:
         empty = features.new_zeros(0)
         empty_rows = self.row.new_zeros(0)
-        total = None
+        # Zeros rather than `None`: with no scalar channels to weight by, the
+        # sum is over an empty set and that is zero. Accumulating from `None`
+        # made the declared return type a lie in exactly that case, and the
+        # `None` would have travelled into the rest of the model.
+        total = features.new_zeros(features.shape[0], self.dim_out)
         for scalar in range(self.num_scalars):
             mapped = equivariant_linear(
                 features,
@@ -386,9 +575,17 @@ class ReferenceFullyConnectedTP(nn.Module):
                 empty_rows,
                 self.dim_out,
             )
-            scaled = mapped * attributes[:, scalar : scalar + 1]
-            total = scaled if total is None else total + scaled
+            total = total + mapped * attributes[:, scalar : scalar + 1]
         return total
+
+    def initialize_weights(self, seed: int) -> None:
+        """A standard normal, scaled by the fan-in of both inputs.
+
+        The skip connection sees every element attribute, so its fan-in counts
+        them as well as the node features' multiplicity.
+        """
+        with torch.no_grad():
+            self.weight.copy_(_draw(self.weight, seed) * self.weight_scale)
 
     def to_canonical(self) -> dict[str, Tensor]:
         return {"weight": self.weight.detach()}
@@ -448,23 +645,32 @@ class ReferenceRadialBasis(nn.Module):
                 f"{descriptor.kind!r} is not a radial basis this backend "
                 f"builds. The kinds are {sorted(_BASES)}."
             )
-        # ARCH-1's Chebyshev takes no r_max, and rightly: the frozen tree
-        # stored one and never used it, so the polynomials run past the unit
-        # interval into the divergent branch. Passing it would be inventing a
-        # parameter the basis does not have.
-        if descriptor.kind == "chebyshev":
-            self.basis: nn.Module = ChebyshevBasis(num_basis=descriptor.num_basis)
-        elif descriptor.kind == "gaussian":
-            self.basis = GaussianBasis(
-                r_max=descriptor.cutoff, num_basis=descriptor.num_basis
+        # The bases make their constants in the process default at
+        # construction, so they are built with the descriptor's precision as
+        # the default. Left to the process, a float64 model built in a fresh
+        # interpreter holds float32 frequencies and cutoffs.
+        previous = torch.get_default_dtype()
+        torch.set_default_dtype(_TORCH_DTYPE[descriptor.precision])
+        try:
+            # ARCH-1's Chebyshev takes no r_max, and rightly: the frozen tree
+            # stored one and never used it, so the polynomials run past the unit
+            # interval into the divergent branch. Passing it would be inventing a
+            # parameter the basis does not have.
+            if descriptor.kind == "chebyshev":
+                self.basis: nn.Module = ChebyshevBasis(num_basis=descriptor.num_basis)
+            elif descriptor.kind == "gaussian":
+                self.basis = GaussianBasis(
+                    r_max=descriptor.cutoff, num_basis=descriptor.num_basis
+                )
+            else:
+                self.basis = BesselBasis(
+                    r_max=descriptor.cutoff, num_basis=descriptor.num_basis
+                )
+            self.cutoff = PolynomialCutoff(
+                r_max=descriptor.cutoff, polynomial_order=descriptor.cutoff_order
             )
-        else:
-            self.basis = BesselBasis(
-                r_max=descriptor.cutoff, num_basis=descriptor.num_basis
-            )
-        self.cutoff = PolynomialCutoff(
-            r_max=descriptor.cutoff, polynomial_order=descriptor.cutoff_order
-        )
+        finally:
+            torch.set_default_dtype(previous)
 
     def forward(self, lengths: Tensor) -> Tensor:
         return self.basis(lengths) * self.cutoff(lengths)
@@ -482,6 +688,7 @@ class ReferenceBackend:
             dtypes=frozenset({"float64", "float32"}),
             max_lmax=0,
             layouts=frozenset({"mul_ir"}),
+            activation_layouts=frozenset({"mul_ir", "ir_mul"}),
             bases=frozenset({"reduced", "full"}),
             supports_double_backward=True,
         )

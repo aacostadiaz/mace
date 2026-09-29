@@ -27,7 +27,9 @@ from typing import Any, Literal
 import numpy as np
 
 __all__ = [
+    "GRAPH_INPUT_DEFAULTS",
     "GRAPH_SCHEMA",
+    "NODE_INPUT_DEFAULTS",
     "FieldSpec",
     "GraphInfo",
     "GraphValidationError",
@@ -155,6 +157,81 @@ GRAPH_SCHEMA: Mapping[str, FieldSpec] = {
         "Weight of each graph in the loss. Zero on a padding graph, which is "
         "what makes padding cost nothing in the gradient.",
     ),
+    "head": FieldSpec(
+        ("n_graphs",),
+        "int64",
+        False,
+        "graphs",
+        "zero",
+        "Which head each graph belongs to, as a position in the model's head "
+        "list. It is data rather than something derived: two structures with "
+        "the same elements and the same geometry belong to different heads "
+        "when they came from different levels of theory, and the isolated-atom "
+        "energies the model subtracts are indexed by it.",
+    ),
+    "total_charge": FieldSpec(
+        ("n_graphs",),
+        "float64",
+        False,
+        "graphs",
+        "zero",
+        "Total charge of each structure, in units of the elementary charge. "
+        "Present only for a model that reads it.",
+    ),
+    "total_spin": FieldSpec(
+        ("n_graphs",),
+        "float64",
+        False,
+        "graphs",
+        "one",
+        "Spin multiplicity of each structure, 2S + 1, so a singlet is one. "
+        "Present only for a model that reads it.",
+    ),
+    "external_field": FieldSpec(
+        ("n_graphs", 3),
+        "float64",
+        False,
+        "graphs",
+        "zero",
+        "The applied electric field on each structure, in V/Angstrom. Present "
+        "only for a model that reads it.",
+    ),
+    "charges": FieldSpec(
+        ("n_nodes",),
+        "float64",
+        False,
+        "nodes",
+        "zero",
+        "A fixed charge on each atom, in units of the elementary charge, read "
+        "from the structure's charge labels. Present only for a model that "
+        "reads it.",
+    ),
+    "magmom": FieldSpec(
+        ("n_nodes", 3),
+        "float64",
+        False,
+        "nodes",
+        "zero",
+        "The magnetic moment on each atom, in Bohr magnetons. An input the "
+        "magnetic model reads and differentiates against, not a label it "
+        "predicts. Present only for a model that reads it.",
+    ),
+}
+
+#: What a structure that does not say has, for each per-structure input a model
+#: may read: neutral, a singlet, and no applied field. The value a file leaves
+#: out, not a padding value.
+GRAPH_INPUT_DEFAULTS: Mapping[str, tuple[float, ...]] = {
+    "total_charge": (0.0,),
+    "total_spin": (1.0,),
+    "external_field": (0.0, 0.0, 0.0),
+}
+
+#: The same, for each per-atom input: the value every atom of a structure that
+#: does not say has, one entry per component. No charge, and no moment.
+NODE_INPUT_DEFAULTS: Mapping[str, tuple[float, ...]] = {
+    "charges": (0.0,),
+    "magmom": (0.0, 0.0, 0.0),
 }
 
 

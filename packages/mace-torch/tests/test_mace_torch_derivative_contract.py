@@ -15,7 +15,13 @@ import pytest
 import torch
 from conftest import fp64_only
 from mace_torch.physics import cell_volume_and_mask, prepare_inputs
-from mace_torch_engine_fixtures import build_engine, build_graph, crystal, molecule
+from mace_torch_engine_fixtures import (
+    ENERGY,
+    build_engine,
+    build_graph,
+    crystal,
+    molecule,
+)
 
 PERIODIC = (True, True, True)
 
@@ -170,6 +176,35 @@ def test_edge_forces_are_minus_the_gradient_against_the_edge_vectors():
 
 
 @fp64_only
+def test_asking_for_edge_forces_as_well_leaves_the_forces_as_they_were():
+    """The edge vectors are differentiated where they are, as a function of
+    the positions. Made a leaf of their own, they cut the energy off from the
+    positions, and the forces asked for beside them came back as zeros."""
+    engine = build_engine()
+    positions, numbers = molecule()
+    alone = engine(build_graph(positions, numbers), compute=("forces",))
+    both = engine(build_graph(positions, numbers), compute=("forces", "edge_forces"))
+    assert float(alone.forces.abs().max()) > 0.0
+    torch.testing.assert_close(both.forces, alone.forces, rtol=0.0, atol=0.0)
+
+
+@fp64_only
+def test_the_edge_forces_add_up_to_the_forces():
+    """Each edge vector is its receiver's position minus its sender's, so the
+    force on an atom is what its edges push it with, receiving minus sending."""
+    engine = build_engine()
+    positions, numbers = molecule()
+    graph = build_graph(positions, numbers)
+    result = engine(graph, compute=("forces", "edge_forces"))
+    edge_forces = result.extras["edge_forces"]
+    sender, receiver = graph["edge_index"]
+    assembled = torch.zeros_like(result.forces)
+    assembled.index_add_(0, receiver, edge_forces)
+    assembled.index_add_(0, sender, -edge_forces)
+    torch.testing.assert_close(assembled, result.forces, rtol=1e-12, atol=1e-14)
+
+
+@fp64_only
 def test_asking_for_nothing_returns_the_model_output_alone():
     engine = build_engine()
     positions, numbers = molecule()
@@ -184,7 +219,7 @@ def test_an_unknown_derivative_name_lists_the_ones_that_exist():
     engine = build_engine()
     positions, numbers = molecule()
     with pytest.raises(ValueError, match="edge_forces"):
-        engine(build_graph(positions, numbers), compute=("hessian",))
+        engine(build_graph(positions, numbers), compute=("curvature",))
 
 
 @fp64_only
@@ -196,11 +231,10 @@ def test_a_derivative_without_an_energy_says_what_is_missing():
     from mace_torch.physics import DerivativeEngine
 
     engine = build_engine()
-    dipole = ObservableSpec(
-        name="dipole", irreps="1o", per_atom=False, units="eV/A", normalization="none"
-    )
+    dipole = ObservableSpec(name="dipole", irreps="1o", per_atom=False, units="eV/A")
     without_energy = DerivativeEngine(
         engine.backbone,
+        ENERGY,
         MACEOutputs(ReferenceBackend(), [dipole], engine.backbone.layer_irreps, 4),
     )
     positions, numbers = molecule()
@@ -249,3 +283,50 @@ def test_a_batch_mixing_a_molecule_with_a_crystal_keeps_the_crystal_stress():
 
     assert not bool(periodic[0]) and bool(periodic[1])
     assert float(volume[0]) == 1.0 and float(volume[1]) == 64.0
+
+
+@fp64_only
+def test_the_hessian_is_the_derivative_of_minus_the_forces():
+    """Against central differences of the forces, which is what it is."""
+    engine = build_engine()
+    positions, numbers = molecule()
+    result = engine(build_graph(positions, numbers), compute=("forces", "hessian"))
+    hessian = result.extras["hessian"]
+    count = positions.shape[0]
+    assert hessian.shape == (3 * count, count, 3)
+    step = 1e-5
+    for atom, axis in ((0, 0), (1, 2)):
+        shifted = []
+        for sign in (1.0, -1.0):
+            moved = np.array(positions, dtype=float)
+            moved[atom, axis] += sign * step
+            forces = engine(build_graph(moved, numbers), compute=("forces",)).forces
+            shifted.append(forces)
+        column = -(shifted[0] - shifted[1]) / (2 * step)
+        # Column (atom, axis) of the Hessian is row (atom, axis) by symmetry.
+        torch.testing.assert_close(
+            hessian[3 * atom + axis], column, rtol=1e-6, atol=1e-8
+        )
+
+
+@fp64_only
+def test_the_atoms_shares_add_up_to_the_structure_s_virials_and_stress():
+    engine = build_engine()
+    positions, numbers, cell = crystal()
+    graph = build_graph(positions, numbers, cell=cell, pbc=(True, True, True))
+    result = engine(
+        graph,
+        compute=("forces", "stress", "virials", "atomic_virials", "atomic_stresses"),
+    )
+    torch.testing.assert_close(
+        result.extras["atomic_virials"].sum(dim=0),
+        result.virials[0],
+        rtol=1e-10,
+        atol=1e-12,
+    )
+    torch.testing.assert_close(
+        result.extras["atomic_stresses"].sum(dim=0),
+        result.stress[0],
+        rtol=1e-10,
+        atol=1e-12,
+    )

@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
 
-from mace_core.observables import derivative_name
+from mace_core.observables import default_derivative_name
 
 from tests.golden import harness, surface_scan
 
@@ -69,11 +69,11 @@ PER_GRAPH_KINDS = frozenset(
     }
 )
 
-#: The inputs a derivative row may be taken against. ``pos`` and ``cell`` are
-#: the two every model has and are declared in the shipped defaults; ``magmom``
-#: is the third the frozen tree actually differentiates against, and is
-#: declared by whichever configuration turns the magnetic model on.
-DECLARED_INPUTS = frozenset({"pos", "cell", "magmom"})
+#: The inputs a derivative row may be taken against. ``pos`` and ``strain``
+#: are the two every model has and are declared in the shipped defaults;
+#: ``magmom`` is the third the frozen tree actually differentiates against, and
+#: is declared by whichever configuration turns the magnetic model on.
+DECLARED_INPUTS = frozenset({"pos", "strain", "magmom"})
 
 
 @dataclass(frozen=True)
@@ -133,12 +133,18 @@ class Derivative:
             two agree, with no way to annotate a disagreement: a pair the rule
             gets wrong is either a misclassified row or a real gap in the
             grammar, and both have to be resolved rather than recorded.
+        name: What v1 calls it, when that is not the rule's own
+            ``d_<of>_d_<wrt>``. Stated here rather than read out of the
+            declarations file on purpose: this table is the independent
+            statement of what the frozen tree does, and a test that derived
+            both sides from the same source would agree with itself.
         note: Why the row is worth a second look, where it is.
     """
 
     of: str
     wrt: str
     sign: int
+    name: str = ""
     note: str = ""
 
 
@@ -215,7 +221,7 @@ DISPOSITIONS: dict[str, Disposition] = {
     "virials": Spec(
         irreps="0e+2e",
         note=(
-            "the NEGATED cell derivative, and the sign is not a detail: "
+            "the NEGATED strain derivative, and the sign is not a detail: "
             "`compute_forces_virials` computes the stress from the raw "
             "gradient and negates the virial only in its return statement "
             "(mace/modules/utils.py:107-115), so the frozen tree reports "
@@ -339,14 +345,16 @@ DISPOSITIONS: dict[str, Disposition] = {
     ),
     # --- derivatives -------------------------------------------------------
     "forces": Derivative(
+        name="forces",
         of="energy",
         wrt="pos",
         sign=-1,
         note="mace/modules/utils.py:115 returns `-1 * forces`.",
     ),
     "stress": Derivative(
+        name="stress",
         of="energy",
-        wrt="cell",
+        wrt="strain",
         sign=+1,
         note=(
             "positive, and only because the stress is built from the raw "
@@ -355,6 +363,7 @@ DISPOSITIONS: dict[str, Disposition] = {
         ),
     ),
     "magforces": Derivative(
+        name="magforces",
         of="energy",
         wrt="magmom",
         sign=-1,
@@ -404,8 +413,9 @@ DISPOSITIONS: dict[str, Disposition] = {
     ),
     "displacement": Drop(
         reason=(
-            "the symmetric strain handle the cell derivative is taken against. "
-            "It is created as zeros to attach the cell to the autograd graph "
+            "the symmetric strain the stress is the derivative against, the "
+            "`strain` input of the shipped declarations. It is created as "
+            "zeros to attach the positions and the cell to the autograd graph "
             "and nothing ever writes to it, so its value is identically zero "
             "on every structure. It belongs to the derivative engine, not to "
             "the output surface."
@@ -486,7 +496,7 @@ def v1_name(key: str) -> str:
     """The name ``key`` carries in v1: renamed, rule-derived, or unchanged."""
     row = DISPOSITIONS[key]
     if isinstance(row, Derivative):
-        return derivative_name(row.of, row.wrt)
+        return row.name or default_derivative_name(row.of, row.wrt)
     if isinstance(row, Spec) and row.renamed_to:
         return row.renamed_to
     return key

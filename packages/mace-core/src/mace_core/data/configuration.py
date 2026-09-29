@@ -24,12 +24,18 @@ volume was invented.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 
-__all__ = ["DEFAULT_CONFIG_TYPE", "DEFAULT_HEAD", "Configuration"]
+__all__ = [
+    "DEFAULT_CONFIG_TYPE",
+    "DEFAULT_HEAD",
+    "Configuration",
+    "structures_fingerprint",
+]
 
 #: The config type a structure gets when the file does not name one.
 DEFAULT_CONFIG_TYPE = "Default"
@@ -47,11 +53,15 @@ class Configuration:
         positions: ``[n_atoms, 3]`` Cartesian positions, in Angstrom.
         properties: Labels and graph-level inputs, keyed by convention name.
             A declared property whose key was absent from the file is present
-            here as ``None``, paired with a zero weight, rather than missing:
-            a loss term can then see that the label is unavailable for this
-            structure without having to know which keys were configured.
+            here as ``None`` rather than missing, so ``None`` is what says the
+            label is unavailable. See :meth:`is_labelled`.
         property_weights: Per-property weight in the loss, one entry per key in
-            ``properties``. ``0.0`` marks a property the file did not carry.
+            ``properties``. An absent label is also zeroed here, as a safety
+            net for a consumer that reads only the weight, but the zero does
+            **not** mean absence: a file is free to write
+            ``config_forces_weight=0.0`` for a structure whose forces are
+            perfectly present, and the two are the same number. Ask
+            :meth:`is_labelled`.
         cell: ``[3, 3]`` lattice vectors as rows, in Angstrom, exactly as the
             file gave them. ``None`` when the format carries no cell at all;
             an all-zero matrix is what an aperiodic structure normally gets.
@@ -74,3 +84,58 @@ class Configuration:
 
     def __len__(self) -> int:
         return len(self.atomic_numbers)
+
+    def is_labelled(self, name: str) -> bool:
+        """Whether this structure carries a value for ``name``.
+
+        The one unambiguous answer. A zero in ``property_weights`` cannot give
+        it: an absent label is zeroed, and so is a label the file deliberately
+        weighted to zero, and those are different facts about the structure.
+
+        Args:
+            name: A convention name, as ``properties`` is keyed.
+
+        Returns:
+            ``False`` for a property that was never declared as well as for one
+            declared and absent, since neither gives a value to train on.
+        """
+        return self.properties.get(name) is not None
+
+
+def structures_fingerprint(
+    configurations: Sequence[Configuration], inputs: Sequence[str] = ()
+) -> str:
+    """A digest of what a model reads from these structures, in their order.
+
+    The elements, the positions, the cell and its periodicity of each, and the
+    named inputs among its properties, a moment or a total charge. Not the
+    labels: two sets of structures that differ only in their labels are the
+    same structures to be labelled, and that is what the digest is compared
+    for. Exact: the float64 bytes, not a rounding of them.
+
+    Args:
+        configurations: The structures.
+        inputs: The properties that are inputs of the model, not labels.
+    """
+    import hashlib
+
+    digest = hashlib.sha256()
+    for configuration in configurations:
+        digest.update(
+            np.asarray(configuration.atomic_numbers, dtype=np.int64).tobytes()
+        )
+        digest.update(np.asarray(configuration.positions, dtype=np.float64).tobytes())
+        cell = configuration.cell
+        digest.update(
+            b"no cell" if cell is None else np.asarray(cell, dtype=np.float64).tobytes()
+        )
+        digest.update(repr(configuration.pbc).encode())
+        for name in inputs:
+            value = configuration.properties.get(name)
+            digest.update(name.encode())
+            digest.update(
+                b"absent"
+                if value is None
+                else np.asarray(value, dtype=np.float64).tobytes()
+            )
+    return digest.hexdigest()

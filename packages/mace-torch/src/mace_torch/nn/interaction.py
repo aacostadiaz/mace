@@ -34,12 +34,11 @@ from mace_core.kernels.descriptors import (
     LinearDescriptor,
 )
 from mace_core.kernels.paths import channelwise_paths
+from mace_core.kernels.precision import Precision
 from torch import Tensor, nn
 
 from mace_torch.nn.layout import (
     expanded_irreps,
-    inverse_layout_index,
-    path_layout_index,
 )
 from mace_torch.nn.radial_mlp import RadialMLP
 
@@ -56,8 +55,7 @@ class _Convolution(nn.Module):
     visible as the one thing it is, rather than as a flag.
     """
 
-    to_channels: Tensor
-    from_paths: Tensor
+    neighbours: Tensor
 
     def __init__(
         self,
@@ -69,7 +67,7 @@ class _Convolution(nn.Module):
         num_features: int,
         avg_num_neighbors: float,
         radial_hidden=DEFAULT_RADIAL_HIDDEN,
-        precision: str = "float64",
+        precision: Precision = "float64",
     ) -> None:
         super().__init__()
         paths = channelwise_paths(irreps_node, irreps_edge, irreps_target)
@@ -79,7 +77,6 @@ class _Convolution(nn.Module):
 
         self.num_features = num_features
         self.num_paths = len(paths)
-        self.node_width = Irreps.parse(irreps_node).dimension
         self.target_width = Irreps.parse(irreps_target).dimension
         self.irreps_out = target_flat
 
@@ -94,6 +91,7 @@ class _Convolution(nn.Module):
                 irreps_edge=irreps_edge,
                 irreps_out=irreps_target,
                 num_radial=num_radial,
+                num_features=num_features,
                 precision=precision,
             )
         )
@@ -104,16 +102,6 @@ class _Convolution(nn.Module):
             LinearDescriptor(
                 irreps_in=path_flat, irreps_out=target_flat, precision=precision
             )
-        )
-        self.register_buffer(
-            "to_channels",
-            torch.tensor(inverse_layout_index(irreps_node, num_features)),
-            persistent=False,
-        )
-        self.register_buffer(
-            "from_paths",
-            torch.tensor(path_layout_index(paths, num_features)),
-            persistent=False,
         )
         self.register_buffer(
             "neighbours", torch.tensor(float(avg_num_neighbors)), persistent=False
@@ -130,17 +118,30 @@ class _Convolution(nn.Module):
     ) -> Tensor:
         """Flat node features in, flat message out, both grouped by irrep."""
         mapped = self.linear_up(node_features)
-        mapped = mapped[..., self.to_channels].reshape(
-            -1, self.num_features, self.node_width
-        )
         weights = self.radial(edge_radial).reshape(
             -1, self.num_paths, self.num_features
         )
         message = self.convolution(
             mapped, edge_attributes, weights, sender, receiver, num_nodes
         )
-        message = message.reshape(num_nodes, -1)[..., self.from_paths]
         return self.linear(message) / self.neighbours
+
+    def to_canonical(self) -> dict[str, Tensor]:
+        """The neighbour normalization, which the checkpoint has to carry.
+
+        It is a constant of the trained model rather than a weight: the
+        messages are divided by it, and a model rebuilt with another value
+        loads without complaint and computes a different function. Measured
+        on a water molecule, a model trained at six and reloaded at the
+        default of one is off by 0.49 eV. So it travels with the weights, like
+        the isolated-atom energies do, and a rebuild can start from any value.
+        """
+        return {"neighbours": self.neighbours.detach()}
+
+    def load_canonical(self, state: dict[str, Tensor]) -> None:
+        """Put the normalization back, in the model's own dtype and place."""
+        with torch.no_grad():
+            self.neighbours.copy_(state["neighbours"])
 
 
 class InteractionBlock(nn.Module):
@@ -170,7 +171,7 @@ class InteractionBlock(nn.Module):
         num_elements: int,
         avg_num_neighbors: float = 1.0,
         radial_hidden=DEFAULT_RADIAL_HIDDEN,
-        precision: str = "float64",
+        precision: Precision = "float64",
     ) -> None:
         super().__init__()
         self.body = _Convolution(
@@ -239,7 +240,7 @@ class ResidualInteractionBlock(nn.Module):
         num_elements: int,
         avg_num_neighbors: float = 1.0,
         radial_hidden=DEFAULT_RADIAL_HIDDEN,
-        precision: str = "float64",
+        precision: Precision = "float64",
     ) -> None:
         super().__init__()
         self.body = _Convolution(

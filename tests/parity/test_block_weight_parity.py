@@ -16,17 +16,18 @@ from pathlib import Path
 
 import pytest
 import torch
-from fm00_convert import (
-    contraction_weights_to_canonical,
-    fully_connected_tp_weights_to_canonical,
-    linear_weights_to_canonical,
-)
 from mace_core.clebsch_gordan.irreps import Irreps
 from mace_core.kernels.descriptors import FullyConnectedTPDescriptor
 from mace_torch.backends.reference import ReferenceBackend
 from mace_torch.backends.reference.backend import ReferenceFullyConnectedTP
-from mace_torch.nn.layout import channel_layout_index
+from mace_torch.backends.layout import CANONICAL
 from mace_torch.nn.product_basis import EquivariantProductBasisBlock
+
+from tests.parity.fm00_convert import (
+    contraction_weights_to_canonical,
+    fully_connected_tp_weights_to_canonical,
+    linear_weights_to_canonical,
+)
 
 ANCHORS = Path(__file__).resolve().parents[1] / "golden/models"
 
@@ -152,7 +153,7 @@ def test_a_whole_product_block_converts_exactly(fp64, anchor, index):
     element = torch.full((5,), 1, dtype=torch.long)
 
     theirs = legacy(features, None, attributes).detach()
-    flat = features.reshape(5, -1)[:, channel_layout_index(CHANNEL_IN, CHANNELS)]
+    flat = CANONICAL.grouped(features, CANONICAL.terms(CHANNEL_IN))
     ours = mine(flat, element, None).detach()
 
     assert float(theirs.abs().max()) > 1e-3, "the trained product maps to nothing"

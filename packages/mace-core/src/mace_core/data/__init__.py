@@ -16,6 +16,7 @@ from mace_core.data.backend import (
     DatasetManifest,
     DatasetStatistics,
 )
+from mace_core.data.backends.memory import InMemoryBackend
 from mace_core.data.backends.xyz import XYZBackend
 from mace_core.data.configuration import (
     DEFAULT_CONFIG_TYPE,
@@ -23,9 +24,15 @@ from mace_core.data.configuration import (
     Configuration,
 )
 from mace_core.data.conformance import data_backend_conformance
+from mace_core.data.e0_resolution import (
+    E0Provenance,
+    E0ResolutionError,
+    EnergyPredictor,
+    resolve_e0s,
+)
 from mace_core.data.keys import (
-    ARRAYS_CONVENTION_NAMES,
-    INFO_CONVENTION_NAMES,
+    ATOM_CONVENTION_NAMES,
+    GRAPH_CONVENTION_NAMES,
     EmbeddingFeatureSpec,
     KeySpecification,
 )
@@ -55,11 +62,11 @@ from mace_core.elements import (
 )
 
 __all__ = [
-    "ARRAYS_CONVENTION_NAMES",
+    "ATOM_CONVENTION_NAMES",
     "DEFAULT_CONFIG_TYPE",
     "DEFAULT_HEAD",
     "ENTRY_POINT_GROUP",
-    "INFO_CONVENTION_NAMES",
+    "GRAPH_CONVENTION_NAMES",
     "ISOLATED_ATOM_CONFIG_TYPE",
     "AmbiguousFormatError",
     "AtomicNumberTable",
@@ -69,7 +76,11 @@ __all__ = [
     "DatasetManifest",
     "DatasetStatistics",
     "DefaultKeys",
+    "E0Provenance",
+    "E0ResolutionError",
     "EmbeddingFeatureSpec",
+    "EnergyPredictor",
+    "InMemoryBackend",
     "KeySpecification",
     "ParsedConfigurations",
     "UnknownBackendError",
@@ -85,4 +96,5 @@ __all__ = [
     "open_dataset",
     "random_train_valid_split",
     "read_configurations",
+    "resolve_e0s",
 ]

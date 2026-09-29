@@ -19,7 +19,6 @@ import ase.io
 import numpy as np
 import pytest
 import torch
-from fm00_convert import build_config, energy_constants_to_canonical, transfer_weights
 from mace_core.elements import AtomicNumberTable, ResolvedE0s
 from mace_core.kernels.precision import PrecisionConfig
 from mace_core.neighbors import get_neighborhood
@@ -29,9 +28,19 @@ from mace_torch.models import EnergyOutputHead, MACEModel, ScaleShiftSpec
 from mace_torch.physics import DerivativeEngine
 from mace_torch.serialization import load_checkpoint, save_checkpoint
 
+from tests.parity.fm00_convert import (
+    build_config,
+    energy_constants_to_canonical,
+    transfer_weights,
+)
+
 GOLDEN = Path(__file__).resolve().parents[1] / "golden"
 ENERGY = ObservableSpec(
-    name="energy", irreps="0e", per_atom=False, units="eV", normalization="none"
+    name="energy",
+    irreps="0e",
+    per_atom=False,
+    units="eV",
+    derivatives=[{"wrt": "pos", "name": "forces", "sign": -1, "units": "eV/A"}],
 )
 
 #: The fp64 row of the golden tolerance table. Stated here because this package
@@ -124,7 +133,7 @@ def test_a_converted_anchor_matches_the_live_legacy_model(fp64, anchor):
     """
     legacy = load_anchor(anchor)
     model, config = convert(legacy)
-    engine = DerivativeEngine(model)
+    engine = DerivativeEngine(model, ENERGY)
     numbers = [int(z) for z in legacy.atomic_numbers.tolist()]
 
     structures = ase.io.read(GOLDEN / "fixtures/tiny_train.xyz", index=":")
@@ -196,7 +205,7 @@ def test_a_converted_anchor_survives_the_checkpoint(fp64, tmp_path):
         legacy_batch(legacy, atoms).to_dict(), training=False, compute_force=True
     )
     graph = v1_graph(atoms, numbers, config["cutoff"])
-    result = DerivativeEngine(restored)(graph, compute=("forces",))
+    result = DerivativeEngine(restored, ENERGY)(graph, compute=("forces",))
 
     assert (
         abs(float(reference["energy"].detach()) - float(result.total_energy.detach()))
@@ -239,7 +248,7 @@ def test_energy_forces_and_stress_match_on_every_tiny_fixture(
         compute_force=True,
         compute_stress=True,
     )
-    result = DerivativeEngine(model)(
+    result = DerivativeEngine(model, ENERGY)(
         v1_graph(atoms, numbers, config["cutoff"]), compute=("forces", "stress")
     )
 
@@ -308,7 +317,7 @@ def test_both_stacks_take_the_same_training_step(fp64, isolated, anchor):
         "num_graphs": int(batch.num_graphs),
         "head": torch.zeros(int(batch.num_graphs), dtype=torch.long),
     }
-    output = DerivativeEngine(model)(graph, compute=("forces",), training=True)
+    output = DerivativeEngine(model, ENERGY)(graph, compute=("forces",), training=True)
     our_loss = loss_of(batch, {"energy": output.total_energy, "forces": output.forces})
     our_loss.backward()
 
@@ -349,8 +358,61 @@ def test_the_converted_energy_differentiates_twice(fp64, isolated):
     def energy(positions):
         moving = dict(graph)
         moving["positions"] = positions
-        return DerivativeEngine(model)(moving, compute=()).total_energy
+        return DerivativeEngine(model, ENERGY)(moving, compute=()).total_energy
 
     start = graph["positions"].clone().requires_grad_(True)
     assert torch.autograd.gradcheck(energy, (start,), eps=1e-6, atol=1e-7)
     assert torch.autograd.gradgradcheck(energy, (start,), eps=1e-6, atol=1e-5)
+
+
+def test_a_model_without_the_pair_repulsion_converts_too(fp64, isolated):
+    """Every committed anchor has the repulsion on, so the envelope order was
+    once read off the repulsion and defaulted to 6 without it. A legacy model
+    with the default envelope of order 5 and no repulsion then converted into a
+    different function, off by 0.18 eV on 64 atoms of diamond."""
+    from ase.build import bulk
+    from e3nn import o3
+
+    from mace import modules
+
+    torch.manual_seed(0)
+    legacy = modules.ScaleShiftMACE(
+        r_max=5.0,
+        num_bessel=8,
+        num_polynomial_cutoff=5,
+        max_ell=2,
+        interaction_cls=modules.interaction_classes[
+            "RealAgnosticResidualInteractionBlock"
+        ],
+        interaction_cls_first=modules.interaction_classes[
+            "RealAgnosticInteractionBlock"
+        ],
+        num_interactions=2,
+        num_elements=1,
+        hidden_irreps=o3.Irreps("8x0e+8x1o"),
+        MLP_irreps=o3.Irreps("8x0e"),
+        gate=torch.nn.functional.silu,
+        atomic_energies=np.array([-1.0]),
+        avg_num_neighbors=8.0,
+        atomic_numbers=[6],
+        correlation=2,
+        radial_type="bessel",
+        atomic_inter_scale=1.0,
+        atomic_inter_shift=0.0,
+        use_reduced_cg=False,
+        pair_repulsion=False,
+    ).to(torch.float64)
+    atoms = bulk("C", "diamond", a=3.57, cubic=True).repeat(2)
+    atoms.positions += np.random.default_rng(0).normal(scale=0.05, size=(64, 3))
+    reference = legacy(
+        legacy_batch(legacy, atoms).to_dict(), training=False, compute_force=True
+    )
+    model, config = convert(legacy)
+    result = DerivativeEngine(model, ENERGY)(
+        v1_graph(atoms, [6], config["cutoff"]), compute=("forces",)
+    )
+    assert config["cutoff_order"] == 5
+    assert (
+        abs(float(reference["energy"]) - float(result.total_energy)) < ENERGY_TOLERANCE
+    )
+    assert float((reference["forces"] - result.forces).abs().max()) < FORCE_TOLERANCE

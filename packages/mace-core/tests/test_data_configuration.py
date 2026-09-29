@@ -19,7 +19,8 @@ import pytest
 from ase import Atoms
 from ase.calculators.singlepoint import SinglePointCalculator
 from mace_core.data import (
-    ARRAYS_CONVENTION_NAMES,
+    ATOM_CONVENTION_NAMES,
+    GRAPH_CONVENTION_NAMES,
     AtomicNumberTable,
     Configuration,
     DefaultKeys,
@@ -115,27 +116,70 @@ def test_the_command_line_spelling_is_derived_from_the_member_name():
 
 
 def test_every_default_key_is_routed_to_exactly_one_half():
-    """A convention name in neither half is never parsed, and nothing says so."""
+    """A convention name in neither half is never parsed, and nothing says so.
+
+    The two halves are derived from the key table now, so the membership half
+    of this cannot fail. What it still asserts is the routing: that
+    `from_defaults` actually puts every name somewhere, and puts none of them
+    in both, which goes through `apply_overrides` and is not a restatement of
+    the derivation.
+    """
     key_spec = KeySpecification.from_defaults()
-    routed = set(key_spec.info_keys) | set(key_spec.arrays_keys)
-    assert routed == {member.name.lower() for member in DefaultKeys}
-    assert not set(key_spec.info_keys) & set(key_spec.arrays_keys)
+    routed = set(key_spec.graph_keys) | set(key_spec.atom_keys)
+    assert routed == set(DefaultKeys.convention_names())
+    assert not set(key_spec.graph_keys) & set(key_spec.atom_keys)
+
+
+def test_the_two_halves_are_read_off_the_key_table():
+    """One statement of where each property lives, not two.
+
+    The halves used to be two frozensets written out beside the table. Adding a
+    member to one and not the other gave a name that could be handed a file key
+    it would never be read with, or one the table knew and nothing would parse.
+    """
+    assert (
+        set(DefaultKeys.convention_names())
+        == GRAPH_CONVENTION_NAMES | ATOM_CONVENTION_NAMES
+    )
+    assert not GRAPH_CONVENTION_NAMES & ATOM_CONVENTION_NAMES
+    for member in DefaultKeys:
+        expected = (
+            GRAPH_CONVENTION_NAMES
+            if member.storage == "graph"
+            else ATOM_CONVENTION_NAMES
+        )
+        assert member.convention_name in expected
+
+
+def test_a_declared_feature_and_a_default_key_use_the_same_two_words():
+    """`per: atom` and the key table's storage are one vocabulary.
+
+    They were `atom`/`graph` on one side and `info`/`arrays` on the other, with
+    a hand-written translation between them. ase's two words survive only in
+    the xyz backend, where ase is what is being touched.
+    """
+    spec = EmbeddingFeatureSpec.from_mapping("charge_state", {"per": "atom"})
+    assert spec.per in {member.storage for member in DefaultKeys}
+    key_spec = KeySpecification.from_defaults().add_embedding_features(
+        {"charge_state": spec}
+    )
+    assert "charge_state" in key_spec.atom_keys
 
 
 def test_the_magnetic_arrays_resolve_with_no_magnetic_flag_set():
     """They are part of the default table, not a magnetic-model extra."""
     key_spec = KeySpecification.from_defaults()
-    assert set(key_spec.arrays_keys) == ARRAYS_CONVENTION_NAMES
-    assert key_spec.arrays_keys["magmom"] == "REF_magmom"
-    assert key_spec.arrays_keys["magforces"] == "REF_magforces"
+    assert set(key_spec.atom_keys) == ATOM_CONVENTION_NAMES
+    assert key_spec.atom_keys["magmom"] == "REF_magmom"
+    assert key_spec.atom_keys["magforces"] == "REF_magforces"
 
 
 def test_the_graph_level_inputs_are_per_structure_keys():
     key_spec = KeySpecification.from_defaults()
-    assert key_spec.info_keys["elec_temp"] == "elec_temp"
-    assert key_spec.info_keys["total_spin"] == "total_spin"
-    assert key_spec.info_keys["total_charge"] == "total_charge"
-    assert key_spec.info_keys["polarizability"] == "polarizability"
+    assert key_spec.graph_keys["elec_temp"] == "elec_temp"
+    assert key_spec.graph_keys["total_spin"] == "total_spin"
+    assert key_spec.graph_keys["total_charge"] == "total_charge"
+    assert key_spec.graph_keys["polarizability"] == "polarizability"
 
 
 # ---------------------------------------------------------------------------
@@ -144,11 +188,11 @@ def test_the_graph_level_inputs_are_per_structure_keys():
 
 
 def test_update_merges_and_returns_self():
-    key_spec = KeySpecification(info_keys={"energy": "a"})
-    returned = key_spec.update(info_keys={"energy": "b"}, arrays_keys={"forces": "f"})
+    key_spec = KeySpecification(graph_keys={"energy": "a"})
+    returned = key_spec.update(graph_keys={"energy": "b"}, atom_keys={"forces": "f"})
     assert returned is key_spec
-    assert key_spec.info_keys["energy"] == "b"
-    assert key_spec.arrays_keys["forces"] == "f"
+    assert key_spec.graph_keys["energy"] == "b"
+    assert key_spec.atom_keys["forces"] == "f"
 
 
 def test_overrides_route_by_name_and_ignore_everything_else():
@@ -156,8 +200,8 @@ def test_overrides_route_by_name_and_ignore_everything_else():
     key_spec.apply_overrides(
         {"energy_key": "E", "forces_key": "F", "unrelated": "x", "seed": 3}
     )
-    assert key_spec.info_keys == {"energy": "E"}
-    assert key_spec.arrays_keys == {"forces": "F"}
+    assert key_spec.graph_keys == {"energy": "E"}
+    assert key_spec.atom_keys == {"forces": "F"}
 
 
 def test_an_override_for_an_unknown_property_is_an_error():
@@ -169,8 +213,8 @@ def test_an_override_for_an_unknown_property_is_an_error():
 def test_a_copy_does_not_share_its_dictionaries():
     original = KeySpecification.from_defaults()
     clone = original.copy()
-    clone.info_keys["energy"] = "somewhere_else"
-    assert original.info_keys["energy"] == "REF_energy"
+    clone.graph_keys["energy"] = "somewhere_else"
+    assert original.graph_keys["energy"] == "REF_energy"
 
 
 def test_an_embedding_feature_lands_in_the_half_its_per_names():
@@ -181,9 +225,9 @@ def test_an_embedding_feature_lands_in_the_half_its_per_names():
             "applied_field": {"per": "graph"},
         }
     )
-    assert key_spec.arrays_keys["site_spin"] == "spin_array"
+    assert key_spec.atom_keys["site_spin"] == "spin_array"
     # no declared key: the feature is read from its own name
-    assert key_spec.info_keys["applied_field"] == "applied_field"
+    assert key_spec.graph_keys["applied_field"] == "applied_field"
 
 
 def test_an_embedding_feature_can_be_given_as_a_typed_spec():
@@ -191,7 +235,7 @@ def test_an_embedding_feature_can_be_given_as_a_typed_spec():
     key_spec.add_embedding_features(
         {"site_spin": EmbeddingFeatureSpec(per="atom", key="spin_array")}
     )
-    assert key_spec.arrays_keys == {"site_spin": "spin_array"}
+    assert key_spec.atom_keys == {"site_spin": "spin_array"}
 
 
 @pytest.mark.parametrize("per", ["bond", "cell", ""])
@@ -231,8 +275,8 @@ def test_an_embedding_feature_reads_through_a_real_file(tmp_path):
 
 def reference_key_spec() -> KeySpecification:
     return KeySpecification(
-        info_keys={"energy": "REF_energy", "stress": "REF_stress", "head": "head"},
-        arrays_keys={"forces": "REF_forces"},
+        graph_keys={"energy": "REF_energy", "stress": "REF_stress", "head": "head"},
+        atom_keys={"forces": "REF_forces"},
     )
 
 
@@ -329,37 +373,32 @@ def test_all_thirteen_default_keys_survive_a_write_and_a_read(tmp_path):
     assert config.head == "Default"
     assert properties["head"] == "Default"
 
-    # every declared property has a weight, and twelve of the thirteen read
+    # every declared property has a weight, and all thirteen read
     assert set(config.property_weights) == set(properties)
     assert {n for n, w in config.property_weights.items() if w == 1.0} == {
         name.lower() for name in DEFAULT_KEY_TABLE
-    } - {"dipole"}
+    }
 
 
-def test_the_default_dipole_key_cannot_be_read_back_from_a_file(tmp_path):
-    """The one default key that does not survive a round trip.
-
-    ase reserves ``dipole`` as a per-structure calculator property, so a value
-    written into ``info`` is read back into ``calc.results`` and never reaches
-    the place the parser looks. The property becomes None at weight zero, which
-    is why every dipole workflow names a different key. Pinned as behaviour the
-    rewrite inherited, not endorsed: this test is what would notice a fix.
-    """
+def test_the_default_dipole_key_is_read_back_from_the_calculator(tmp_path):
+    """ase reserves ``dipole`` as a per-structure calculator property, so a value
+    written into ``info`` is read back into ``calc.results``. The default key is
+    that name, so the reader takes it from there."""
     atoms = water(REF_energy=0.0)
     atoms.new_array("REF_forces", np.zeros((3, 3)))
     atoms.info["dipole"] = np.array([0.1, -0.2, 0.3])
-    atoms.info["REF_dipole"] = np.array([0.1, -0.2, 0.3])
+    atoms.info["REF_dipole"] = np.array([0.4, 0.5, 0.6])
     path = write(tmp_path, [atoms])
 
     parsed = read_configurations(path, KeySpecification.from_defaults())
-    assert parsed.configurations[0].properties["dipole"] is None
-    assert parsed.configurations[0].property_weights["dipole"] == 0.0
+    assert np.allclose(parsed.configurations[0].properties["dipole"], [0.1, -0.2, 0.3])
+    assert parsed.configurations[0].property_weights["dipole"] == 1.0
 
     renamed = read_configurations(
         path,
         KeySpecification.from_defaults().apply_overrides({"dipole_key": "REF_dipole"}),
     )
-    assert np.allclose(renamed.configurations[0].properties["dipole"], [0.1, -0.2, 0.3])
+    assert np.allclose(renamed.configurations[0].properties["dipole"], [0.4, 0.5, 0.6])
 
 
 @pytest.mark.parametrize(
@@ -455,8 +494,8 @@ def calculator_labelled_water() -> Atoms:
 def test_a_reserved_key_is_rewritten_and_recovered_from_the_calculator(tmp_path):
     path = write(tmp_path, [calculator_labelled_water()])
     key_spec = KeySpecification.from_defaults().update(
-        info_keys={"energy": "energy", "stress": "stress"},
-        arrays_keys={"forces": "forces"},
+        graph_keys={"energy": "energy", "stress": "stress"},
+        atom_keys={"forces": "forces"},
     )
 
     parsed = read_configurations(path, key_spec)
@@ -473,17 +512,17 @@ def test_the_callers_key_specification_is_never_touched(tmp_path):
     cannot come back holding whatever the first parse rewrote it to."""
     path = write(tmp_path, [calculator_labelled_water()])
     key_spec = KeySpecification.from_defaults().update(
-        info_keys={"energy": "energy", "stress": "stress"},
-        arrays_keys={"forces": "forces"},
+        graph_keys={"energy": "energy", "stress": "stress"},
+        atom_keys={"forces": "forces"},
     )
-    before = (dict(key_spec.info_keys), dict(key_spec.arrays_keys))
+    before = (dict(key_spec.graph_keys), dict(key_spec.atom_keys))
 
     read_configurations(path, key_spec)
 
-    assert (key_spec.info_keys, key_spec.arrays_keys) == before
-    assert key_spec.info_keys["energy"] == "energy"
-    assert key_spec.arrays_keys["forces"] == "forces"
-    assert key_spec.info_keys["stress"] == "stress"
+    assert (key_spec.graph_keys, key_spec.atom_keys) == before
+    assert key_spec.graph_keys["energy"] == "energy"
+    assert key_spec.atom_keys["forces"] == "forces"
+    assert key_spec.graph_keys["stress"] == "stress"
 
     # and reading twice through the same object gives the same answer
     again = read_configurations(path, key_spec)
@@ -497,7 +536,7 @@ def test_a_reserved_key_with_nothing_to_recover_yields_none(tmp_path):
     whose recovery found nothing."""
     atoms = water()
     atoms.new_array("REF_forces", np.zeros((3, 3)))
-    key_spec = KeySpecification.from_defaults().update(info_keys={"energy": "energy"})
+    key_spec = KeySpecification.from_defaults().update(graph_keys={"energy": "energy"})
 
     parsed = read_configurations(write(tmp_path, [atoms]), key_spec)
     (config,) = parsed.configurations
@@ -643,7 +682,7 @@ def test_a_reference_energy_is_read_through_the_rewritten_key(tmp_path):
 
     parsed = read_configurations(
         path,
-        KeySpecification.from_defaults().update(info_keys={"energy": "energy"}),
+        KeySpecification.from_defaults().update(graph_keys={"energy": "energy"}),
         extract_isolated_atom_energies=True,
     )
     assert parsed.isolated_atom_energies == {8: -3.0}
@@ -792,3 +831,55 @@ def test_an_element_the_table_does_not_have_raises():
 def test_two_tables_with_the_same_order_are_equal():
     assert atomic_number_table_from_zs([8, 1]) == AtomicNumberTable([1, 8])
     assert AtomicNumberTable([1, 8]) != AtomicNumberTable([8, 1])
+
+
+def test_a_zero_weight_and_an_absent_label_are_told_apart():
+    """The weight cannot say which is which, so it must not be asked.
+
+    A file is free to write `config_forces_weight=0.0` for a structure whose
+    forces are there, and an absent label is zeroed too. Both give `0.0`, so a
+    consumer reading the weight to find out whether a label exists is reading
+    two different facts through one number.
+    """
+    key_spec = KeySpecification.from_defaults()
+
+    weighted_to_zero = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    weighted_to_zero.arrays["REF_forces"] = np.zeros((2, 3))
+    weighted_to_zero.info["config_forces_weight"] = 0.0
+    absent = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+
+    present = configuration_from_atoms(weighted_to_zero, key_spec)
+    missing = configuration_from_atoms(absent, key_spec)
+
+    assert (
+        present.property_weights["forces"] == missing.property_weights["forces"] == 0.0
+    )
+    assert present.is_labelled("forces")
+    assert not missing.is_labelled("forces")
+
+
+def test_an_undeclared_property_is_not_labelled_either():
+    """`is_labelled` answers about training data, not about declarations."""
+    configuration = configuration_from_atoms(
+        Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]]),
+        KeySpecification.from_defaults(),
+    )
+    assert not configuration.is_labelled("a_property_nobody_declared")
+
+
+def test_a_reserved_key_is_rewritten_onto_its_default_spelling():
+    """The rewrite has to land where the parser then looks.
+
+    Spelled once, on the key table. A second copy here would keep saying
+    `REF_energy` while the table moved. The dipole is the exception: its
+    default spelling is the reserved one, so it is what gets rewritten.
+    """
+    from mace_core.data.xyz import _RESERVED_KEYS
+
+    for name, reserved in _RESERVED_KEYS.items():
+        default = DefaultKeys[name.upper()].value
+        if reserved.convention:
+            assert reserved.reserved == default
+            assert reserved.rewritten != default
+        else:
+            assert reserved.rewritten == default

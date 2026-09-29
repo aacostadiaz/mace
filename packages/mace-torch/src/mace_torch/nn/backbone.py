@@ -32,11 +32,14 @@ from mace_core.clebsch_gordan.irreps import Irreps
 from mace_core.kernels.descriptors import (
     LinearDescriptor,
     RadialBasisDescriptor,
+    RadialKind,
     SphericalHarmonicsDescriptor,
 )
+from mace_core.kernels.precision import Precision
 from mace_core.observables import InputSpec
 from torch import Tensor, nn
 
+from mace_torch.backends.layout import layout_of
 from mace_torch.nn.interaction import InteractionBlock, ResidualInteractionBlock
 from mace_torch.nn.layout import expanded_irreps
 from mace_torch.nn.node_inputs import NodeInputEmbedding
@@ -73,6 +76,16 @@ class MACEBackbone(nn.Module):
             returning the features to carry into the next layer. This is where
             a domain-decomposed run slices off its ghost nodes. Absent by
             default, and when absent the forward is the hook-free path exactly.
+        last_layer_irreps: One channel's irreps in the last layer's features.
+            Only its scalars by default, since an energy reads nothing else
+            off it. A model that reads more keeps more: a charge-aware model
+            keeps every irrep, and a dipole-only model keeps only the vectors.
+        element_agnostic_product: Share the product basis's weights across
+            elements rather than holding one set per element.
+        edge_axes: The order the edge vector's components are handed to the
+            spherical harmonics. The identity by default. A charge-aware model
+            hands them as ``(y, z, x)``, ``(1, 2, 0)``, which puts its degree
+            one features in the long-range solver's component order.
     """
 
     def __init__(
@@ -87,15 +100,25 @@ class MACEBackbone(nn.Module):
         cutoff: float = 5.0,
         correlation: int = 3,
         avg_num_neighbors: float = 1.0,
-        radial_kind: str = "bessel",
+        radial_kind: RadialKind = "bessel",
         cutoff_order: int = 6,
-        precision: str = "float64",
+        precision: Precision = "float64",
         locality: Callable[[Tensor, Mapping[str, Any]], Tensor] | None = None,
         node_inputs: Sequence[InputSpec] = (),
+        last_layer_irreps: str = "0e",
+        element_agnostic_product: bool = False,
+        edge_axes: tuple[int, int, int] = (0, 1, 2),
     ) -> None:
         super().__init__()
+        if sorted(edge_axes) != [0, 1, 2]:
+            raise ValueError(
+                f"edge_axes is {edge_axes}; it is an order of the three axes."
+            )
         self.atomic_numbers = list(atomic_numbers)
+        self.element_agnostic_product = element_agnostic_product
+        self.edge_axes = None if tuple(edge_axes) == (0, 1, 2) else list(edge_axes)
         self.num_features = num_features
+        self.layout = layout_of(backend)
         self.lmax = lmax
         self.cutoff = cutoff
         self.locality = locality
@@ -140,9 +163,10 @@ class MACEBackbone(nn.Module):
         interactions, products = [], []
         for layer in range(num_layers):
             # The first layer reads the embedding, which is scalars. The last
-            # one produces scalars, because only its invariants are read out.
+            # one produces only what is read off it, scalars for an energy.
             node_per_channel = self.embedding_irreps if layer == 0 else hidden_irreps
-            product_per_channel = "0e" if layer == num_layers - 1 else hidden_irreps
+            last = layer == num_layers - 1
+            product_per_channel = last_layer_irreps if last else hidden_irreps
             if layer == 0:
                 interactions.append(
                     InteractionBlock(
@@ -178,7 +202,9 @@ class MACEBackbone(nn.Module):
                     irreps_in=edge_irreps,
                     irreps_out=product_per_channel,
                     correlation=correlation,
-                    num_elements=len(self.atomic_numbers),
+                    num_elements=(
+                        1 if element_agnostic_product else len(self.atomic_numbers)
+                    ),
                     num_features=num_features,
                     precision=precision,
                 )
@@ -199,7 +225,7 @@ class MACEBackbone(nn.Module):
         # trained artifacts carry: the convolution couples the node features
         # with the harmonics and keeps what lands on those irreps.
         self.layer_irreps = [
-            "0e" if layer == num_layers - 1 else hidden_irreps
+            last_layer_irreps if layer == num_layers - 1 else hidden_irreps
             for layer in range(num_layers)
         ]
         self.interactions = nn.ModuleList(interactions)
@@ -226,9 +252,10 @@ class MACEBackbone(nn.Module):
             graph: The flat dict. Read and never written to.
 
         Returns:
-            One ``[n_nodes, num_features, width]`` tensor per layer. The list
-            rather than only the last, because the readouts above this read
-            every layer and the descriptor API slices them.
+            One ``[n_nodes, num_features * width]`` tensor per layer, grouped
+            by irrep in the backend's layout. The list rather than only the
+            last, because the readouts above this read every layer and the
+            descriptor API slices them.
         """
         positions = graph["positions"]
         edge_index = graph["edge_index"]
@@ -245,7 +272,9 @@ class MACEBackbone(nn.Module):
         else:
             vectors = positions[receiver] - positions[sender] + graph["shifts"]
         lengths = vectors.norm(dim=-1, keepdim=True)
-        edge_attributes = self.edge_attributes(vectors)
+        edge_attributes = self.edge_attributes(
+            vectors if self.edge_axes is None else vectors[:, self.edge_axes]
+        )
         radial = self.radial(lengths)
 
         element = self.element_index(graph["atomic_numbers"])
@@ -256,6 +285,12 @@ class MACEBackbone(nn.Module):
             device=positions.device,
         )
         one_hot[torch.arange(num_nodes, device=positions.device), element] = 1.0
+
+        # One set of product weights for every element is the same contraction
+        # with every node reading the first.
+        product_element = (
+            torch.zeros_like(element) if self.element_agnostic_product else element
+        )
 
         # Scalars only, so the grouped layout is already what comes out.
         features = self.node_embedding(one_hot)
@@ -273,7 +308,7 @@ class MACEBackbone(nn.Module):
                 receiver,
                 num_nodes,
             )
-            features = product(message, element, carried)
+            features = product(message, product_element, carried)
             if self.locality is not None:
                 features = self.locality(features, graph)
             outputs.append(features)
@@ -309,9 +344,15 @@ class MACEBackbone(nn.Module):
         pieces = []
         for index, layer in enumerate(layers):
             if not invariants_only:
-                pieces.append(layer)
+                # Handed to a user, so canonical whatever the backend's layout.
+                grouped = expanded_irreps(self.layer_irreps[index], self.num_features)
+                terms = self.layout.terms(grouped)
+                pieces.append(self.layout.to_canonical(layer, terms))
                 continue
             multiplicity, irrep = Irreps.parse(self.layer_irreps[index]).terms[0]
+            if irrep.degree != 0 or irrep.parity != 1:
+                # A layer that keeps no scalars has no invariants to offer.
+                continue
             pieces.append(
                 layer[..., : self.num_features * multiplicity * irrep.dimension]
             )

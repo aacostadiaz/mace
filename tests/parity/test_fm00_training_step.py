@@ -22,13 +22,6 @@ from pathlib import Path
 
 import pytest
 import torch
-from fm00_convert import (
-    build_config,
-    energy_constants_to_canonical,
-    recorded_basis,
-    transfer_weights,
-)
-from fm00_projection import ProjectionError
 from mace_core.elements import AtomicNumberTable, ResolvedE0s
 from mace_core.kernels.precision import PrecisionConfig
 from mace_core.observables import ObservableSpec
@@ -36,9 +29,21 @@ from mace_torch.backends.reference import ReferenceBackend
 from mace_torch.models import EnergyOutputHead, MACEModel, ScaleShiftSpec
 from mace_torch.physics import DerivativeEngine
 
+from tests.parity.fm00_convert import (
+    build_config,
+    energy_constants_to_canonical,
+    recorded_basis,
+    transfer_weights,
+)
+from tests.parity.fm00_projection import ProjectionError
+
 GOLDEN = Path(__file__).resolve().parents[1] / "golden"
 ENERGY = ObservableSpec(
-    name="energy", irreps="0e", per_atom=False, units="eV", normalization="none"
+    name="energy",
+    irreps="0e",
+    per_atom=False,
+    units="eV",
+    derivatives=[{"wrt": "pos", "name": "forces", "sign": -1, "units": "eV/A"}],
 )
 CHANNEL_IN = "0e+1o+2e"
 
@@ -107,7 +112,7 @@ def test_the_converted_model_takes_the_same_training_step(fp64, anchor, referenc
         "num_graphs": int(batch.num_graphs),
         "head": torch.zeros(int(batch.num_graphs), dtype=torch.long),
     }
-    output = DerivativeEngine(model)(graph, compute=("forces",), training=True)
+    output = DerivativeEngine(model, ENERGY)(graph, compute=("forces",), training=True)
     loss = WeightedEnergyForcesLoss(**LOSS_WEIGHTS).to(torch.float64)(
         batch, {"energy": output.total_energy, "forces": output.forces}
     )

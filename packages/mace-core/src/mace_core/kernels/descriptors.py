@@ -17,12 +17,26 @@ from typing import Literal
 from mace_core.clebsch_gordan.irreps import Irreps
 from mace_core.kernels.precision import Precision
 
+#: Which radial basis a descriptor asks for. Named so a caller can type its
+#: own parameter as the enumeration rather than as a bare string, which is
+#: what leaves a wrong value unnoticed until the descriptor rejects it.
+RadialKind = Literal["bessel", "gaussian", "chebyshev"]
+
+#: How the values of one irrep term sit in a flat feature vector. ``mul_ir``
+#: puts the copies outermost, ``[mul, 2l + 1]``; ``ir_mul`` puts the components
+#: outermost, ``[2l + 1, mul]``. The two coincide for scalars and for any term
+#: with one copy. ``mul_ir`` is the canonical one, the layout checkpoints and
+#: everything handed to a user are in.
+ActivationLayout = Literal["mul_ir", "ir_mul"]
+
 __all__ = [
+    "ActivationLayout",
     "ChannelwiseTPConvDescriptor",
     "Descriptor",
     "FullyConnectedTPDescriptor",
     "LinearDescriptor",
     "RadialBasisDescriptor",
+    "RadialKind",
     "SegmentReduceDescriptor",
     "SphericalHarmonicsDescriptor",
     "SymmetricContractionDescriptor",
@@ -35,9 +49,16 @@ class Descriptor:
 
     Attributes:
         precision: The dtype the op computes in, by name.
+        layout: How the op's input and output features are laid out within
+            each irrep term. Chosen once for the whole chain of ops when the
+            backend is resolved, as the accelerated backend's native layout,
+            and stamped on every descriptor it builds; model code never sets
+            it. The weights are not affected: they are canonical whatever the
+            layout.
     """
 
     precision: Precision = "float64"
+    layout: ActivationLayout = "mul_ir"
 
     @property
     def weight_numel(self) -> int:
@@ -93,23 +114,35 @@ class ChannelwiseTPConvDescriptor(Descriptor):
     """The message-passing tensor product, channel by channel, over the edges.
 
     Attributes:
-        irreps_node: The sender node features.
+        irreps_node: One channel's sender node features.
         irreps_edge: The edge attributes, normally spherical harmonics.
-        irreps_out: The message irreps before the node-level reduction.
+        irreps_out: One channel's message irreps before the node-level
+            reduction.
         num_radial: Width of the radial embedding whose MLP supplies the
             weights.
+        num_features: The channel count.
 
     The op is **always node-level**: it returns ``[n_nodes, ...]``, never
     ``[n_edges, ...]``. Whether the reduction over edges is fused into the
     kernel is the backend's business and not the model's, which is what removes
     the six ``hasattr(self, "conv_fusion")`` branches the frozen tree carries
     through its interaction blocks.
+
+    **Its values are grouped by irrep**, one block per term of the expanded
+    declaration, laid out within the block as :attr:`Descriptor.layout` says,
+    like every other op in the chain. The node features are ``[n_nodes, C * dim_node]``
+    over ``C`` copies of each term of ``irreps_node``; the result is
+    ``[n_nodes, C * dim_paths]``, one block of ``C`` channels per path in the
+    order :func:`~mace_core.kernels.paths.channelwise_paths` pins; the radial
+    weights are ``[n_edges, n_paths, C]``. How a backend arranges them inside
+    its kernel is its own business, and never a permute in the model.
     """
 
     irreps_node: str = "0e"
     irreps_edge: str = "0e"
     irreps_out: str = "0e"
     num_radial: int = 8
+    num_features: int = 1
 
     @property
     def weight_numel(self) -> int:
@@ -121,9 +154,13 @@ class ChannelwiseTPConvDescriptor(Descriptor):
 class SymmetricContractionDescriptor(Descriptor):
     """The many-body contraction over the reduced Clebsch-Gordan basis.
 
+    Its values are grouped by irrep, in the descriptor's layout, like the
+    convolution's: ``[n_nodes, C * dim_in]`` in and ``[n_nodes, C * dim_out]``
+    out, over ``C`` copies of each term of the declarations.
+
     Attributes:
-        irreps_in: The node features being contracted.
-        irreps_out: The output irreps to keep.
+        irreps_in: One channel's node features being contracted.
+        irreps_out: One channel's output irreps to keep.
         correlation: The body order.
         num_elements: How many chemical elements carry their own weights.
         num_features: The channel width.
@@ -171,16 +208,38 @@ class SymmetricContractionDescriptor(Descriptor):
 
 @dataclass(frozen=True)
 class FullyConnectedTPDescriptor(Descriptor):
-    """The skip connection's tensor product against the element attributes."""
+    """The skip connection's tensor product against the element attributes.
+
+    Attributes:
+        irreps_in1: The node features.
+        irreps_in2: The element attributes, which are scalars.
+        irreps_out: What it produces.
+    """
 
     irreps_in1: str = "0e"
     irreps_in2: str = "0e"
     irreps_out: str = "0e"
-    weight_count: int = 0
 
     @property
     def weight_numel(self) -> int:
-        return self.weight_count
+        """Derived from the irreps, like every other descriptor's.
+
+        The second input is scalars, so the product is one equivariant linear
+        map per attribute: the matching multiplicity pairs between the first
+        input and the output, times how many attributes there are. Taking it
+        from the caller instead made it a number nobody checked, and a
+        capability filter or a checkpoint sized against it would have been
+        wrong by whatever the caller happened to pass.
+        """
+        source = Irreps.parse(self.irreps_in1)
+        target = Irreps.parse(self.irreps_out)
+        pairs = sum(
+            in_mul * out_mul
+            for out_mul, out_ir in target
+            for in_mul, in_ir in source
+            if in_ir == out_ir
+        )
+        return pairs * Irreps.parse(self.irreps_in2).dimension
 
 
 @dataclass(frozen=True)
@@ -224,7 +283,7 @@ class RadialBasisDescriptor(Descriptor):
             descriptor stays hashable.
     """
 
-    kind: Literal["bessel", "gaussian", "chebyshev"] = "bessel"
+    kind: RadialKind = "bessel"
     num_basis: int = 8
     #: The order of the polynomial envelope that takes the basis to zero at the
     #: cutoff. It belongs to the model's cutoff setting rather than to the

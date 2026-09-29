@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from mace_core.kernels.descriptors import (
+    ActivationLayout,
     Descriptor,
     RadialBasisDescriptor,
     SphericalHarmonicsDescriptor,
@@ -45,6 +46,12 @@ class BackendCapabilities:
         layouts: Which weight layouts it can consume. Every backend must accept
             ``"mul_ir"``, since that is the canonical one and the only one a
             checkpoint is written in.
+        activation_layouts: Which feature layouts its ops read and write, see
+            :data:`~mace_core.kernels.descriptors.ActivationLayout`. A backend
+            that is asked for another declines the op.
+        native_layout: The feature layout its kernels are fastest in. The
+            chain of ops is built in it when this backend is the chosen one
+            and the reference can follow.
         bases: Which Clebsch-Gordan bases it can consume.
         supports_double_backward: Whether its ops are differentiable twice.
             Training on forces or stress needs the second derivative, so a
@@ -57,6 +64,10 @@ class BackendCapabilities:
     dtypes: frozenset[str] = field(default_factory=lambda: frozenset({"float64"}))
     max_lmax: int = 0
     layouts: frozenset[str] = field(default_factory=lambda: frozenset({"mul_ir"}))
+    activation_layouts: frozenset[str] = field(
+        default_factory=lambda: frozenset({"mul_ir"})
+    )
+    native_layout: ActivationLayout = "mul_ir"
     bases: frozenset[str] = field(default_factory=lambda: frozenset({"reduced"}))
     supports_double_backward: bool = False
 
@@ -68,6 +79,8 @@ class BackendCapabilities:
         in the stack is allowed to guess on its behalf.
         """
         if descriptor.precision not in self.dtypes:
+            return False
+        if descriptor.layout not in self.activation_layouts:
             return False
         if (
             isinstance(descriptor, SymmetricContractionDescriptor)
@@ -97,7 +110,8 @@ class BackendCapabilities:
             raise UnsupportedDescriptorError(
                 f"backend {backend_name!r} does not support {descriptor!r}. Its "
                 f"declared precisions are {sorted(self.dtypes)}, bases "
-                f"{sorted(self.bases)}, layouts {sorted(self.layouts)} and "
+                f"{sorted(self.bases)}, feature layouts "
+                f"{sorted(self.activation_layouts)} and "
                 f"maximum lmax {self.max_lmax or 'unbounded'}."
             )
 

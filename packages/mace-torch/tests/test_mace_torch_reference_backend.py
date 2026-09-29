@@ -7,16 +7,19 @@ carry a differentiable backward or the second derivative is silently wrong, and
 training on forces is exactly that second derivative.
 """
 
+import importlib.metadata
 import importlib.util
-from pathlib import Path
 
 import pytest
-import tomllib
 
 if importlib.util.find_spec("torch") is None:  # pragma: no cover
     pytest.skip("the reference backend needs torch", allow_module_level=True)
 
 import torch
+from mace_core.clebsch_gordan.irreps import Irreps
+from mace_core.clebsch_gordan.reduced_basis import (
+    reduced_symmetric_tensor_product_basis,
+)
 from mace_core.kernels import (
     ChannelwiseTPConvDescriptor,
     FullyConnectedTPDescriptor,
@@ -29,8 +32,6 @@ from mace_core.kernels import (
 )
 from mace_core.kernels.paths import channelwise_paths
 from mace_torch.backends.reference import ReferenceBackend
-
-PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(autouse=True)
@@ -132,7 +133,10 @@ def chain(backend):
     )
     convolution = backend.make_channelwise_tp_conv(
         ChannelwiseTPConvDescriptor(
-            irreps_node="0e+1o", irreps_edge="0e+1o", irreps_out="0e+1o"
+            irreps_node="0e+1o",
+            irreps_edge="0e+1o",
+            irreps_out="0e+1o",
+            num_features=2,
         )
     )
     # The convolution emits one block per coupling path, keeping two couplings
@@ -141,8 +145,8 @@ def chain(backend):
     paths = channelwise_paths("0e+1o", "0e+1o", "0e+1o")
     down = backend.make_linear(
         LinearDescriptor(
-            irreps_in="+".join(str(path.irrep) for path in paths),
-            irreps_out="0e+1o",
+            irreps_in="+".join(f"2x{path.irrep}" for path in paths),
+            irreps_out="2x0e+2x1o",
         )
     )
     with torch.no_grad():
@@ -171,14 +175,16 @@ def chain(backend):
         weights = (
             radial(lengths)[:, : convolution.num_paths].unsqueeze(-1).expand(-1, -1, 2)
         )
-        features = torch.zeros(positions.shape[0], 2, 4, dtype=positions.dtype)
-        features[:, :, 0] = 1.0
+        # Grouped by irrep: the two channels' scalars first, then their
+        # vectors.
+        features = torch.zeros(positions.shape[0], 8, dtype=positions.dtype)
+        features[:, :2] = 1.0
         messages = convolution(
             features, attributes, weights, sender, receiver, positions.shape[0]
         )
         nodes = torch.zeros(positions.shape[0], dtype=torch.long)
         site = contraction(down(messages), nodes)
-        return reduce(site.flatten(1), nodes, 1).sum()
+        return reduce(site, nodes, 1).sum()
 
     return energy
 
@@ -240,7 +246,7 @@ def test_the_canonical_weights_round_trip_through_a_fresh_instance(backend):
     with torch.no_grad():
         for parameter in written.weights:
             parameter.uniform_(-1, 1)
-    features = torch.randn(4, 3, 4)
+    features = torch.randn(4, 3 * 4)
     element = torch.tensor([0, 1, 0, 1])
     expected = written(features, element)
 
@@ -274,14 +280,20 @@ def test_the_linear_weights_round_trip_too(backend):
 
 def test_the_reference_is_declared_as_an_entry_point_that_resolves():
     """Discovery must work for the mandatory backend exactly as it does for a
-    third-party one: `mace_core` names no backend anywhere."""
-    metadata = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text())
-    group = metadata["project"]["entry-points"]["mace.kernel_backends.torch"]
-    assert group["reference"] == "mace_torch.backends.reference:ReferenceBackend"
+    third-party one: `mace_core` names no backend anywhere.
 
-    module_name, _, attribute = group["reference"].partition(":")
-    module = importlib.import_module(module_name)
-    assert getattr(module, attribute) is ReferenceBackend
+    Read from the installed metadata rather than from `pyproject.toml`, because
+    what the registry searches is what pip wrote. A declaration this package
+    ships and the install does not carry would pass a reading of the file and
+    fail every discovery.
+    """
+    entries = importlib.metadata.entry_points(group="mace.kernel_backends.torch")
+    declared = {entry.name: entry for entry in entries}
+    assert "reference" in declared, sorted(declared)
+    assert declared["reference"].value == (
+        "mace_torch.backends.reference:ReferenceBackend"
+    )
+    assert declared["reference"].load() is ReferenceBackend
 
 
 def test_the_skip_connection_refuses_a_non_scalar_second_input(backend):
@@ -293,3 +305,228 @@ def test_the_skip_connection_refuses_a_non_scalar_second_input(backend):
                 irreps_in1="4x0e", irreps_in2="1x1o", irreps_out="4x0e"
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# Output irreps the contraction has to cover
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("irreps_out", ["0e", "1o", "0e+1o", "0e+1o+2e", "1o+1e"])
+def test_the_contraction_builds_every_output_the_layers_ask_for(backend, irreps_out):
+    """A mixed output is the normal case, not an exotic one.
+
+    Each output irrep has its own component count, so one stacked basis over
+    all of them is a join of arrays whose second axis differs: `0e+1o` did not
+    build at all. Two same-sized irreps are worse than that, because they join
+    without complaint and then write into one shared slice instead of adjacent
+    ones, which is a model that trains and is wrong.
+    """
+    descriptor = SymmetricContractionDescriptor(
+        irreps_in="0e+1o",
+        irreps_out=irreps_out,
+        correlation=3,
+        num_elements=2,
+        num_features=4,
+    )
+    operation = backend.make_symmetric_contraction(descriptor)
+    operation.initialize_weights(3)
+    features = torch.randn(5, 4 * Irreps.parse("0e+1o").dimension)
+    elements = torch.randint(0, 2, (5,))
+    assert operation(features, elements).shape == (
+        5,
+        4 * Irreps.parse(irreps_out).dimension,
+    )
+
+
+def test_an_output_irrep_no_body_order_reaches_is_still_built(backend):
+    """`2e` is unreachable from `0e+1o` at body order one, so that order's
+    basis is empty. Inferring its trailing extent with `-1` cannot work on an
+    empty array, and the whole contraction failed to build over it."""
+    descriptor = SymmetricContractionDescriptor(
+        irreps_in="0e+1o",
+        irreps_out="2e",
+        correlation=2,
+        num_elements=1,
+        num_features=2,
+    )
+    operation = backend.make_symmetric_contraction(descriptor)
+    assert operation.weights[0].shape[1] == 0
+    assert operation.weights[1].shape[1] > 0
+
+
+def test_the_skip_connection_advertises_the_weights_it_holds(backend):
+    """The descriptor's count is what a capability filter reads and what sizes
+    a checkpoint, and it used to be whatever the caller passed."""
+    descriptor = FullyConnectedTPDescriptor(
+        irreps_in1="4x0e+4x1o", irreps_in2="2x0e", irreps_out="4x0e+4x1o"
+    )
+    operation = backend.make_fully_connected_tp(descriptor)
+    assert descriptor.weight_numel == operation.weight.numel()
+    assert descriptor.weight_numel == operation.to_canonical()["weight"].numel()
+
+
+# ---------------------------------------------------------------------------
+# The radial bases, differentiated twice
+# ---------------------------------------------------------------------------
+
+#: Where a pair can legitimately sit and the arithmetic is most exposed. The
+#: cutoff itself is reachable: the neighbour list admits a distance equal to it.
+RADIAL_PROBES = (1e-8, 0.5, 2.5, 5.0 - 1e-12, 5.0)
+
+
+@pytest.mark.parametrize("kind", ["bessel", "gaussian", "chebyshev"])
+@pytest.mark.parametrize("length", RADIAL_PROBES)
+def test_a_radial_basis_differentiates_twice_everywhere_it_is_reached(
+    backend, kind, length
+):
+    """Force training differentiates the force, so a second derivative that
+    comes back NaN at one pair poisons the whole gradient and reports nothing.
+
+    The Chebyshev basis is why this exists. Evaluated as ``cos(n * acos(x))``
+    it is smooth in value and in first derivative, because the clamp zeroes the
+    gradient at the endpoints, and its *second* derivative was NaN at a pair
+    exactly at the cutoff. The polynomial itself has no singularity there; the
+    closed form put one in.
+    """
+    operation = backend.make_radial_basis(
+        RadialBasisDescriptor(kind=kind, num_basis=8, cutoff=5.0)
+    )
+    lengths = torch.tensor([[length]], requires_grad=True)
+    values = operation(lengths)
+    assert torch.isfinite(values).all()
+
+    (first,) = torch.autograd.grad(values.sum(), lengths, create_graph=True)
+    assert torch.isfinite(first).all(), f"{kind} first derivative at {length}"
+    (second,) = torch.autograd.grad(first.sum(), lengths)
+    assert torch.isfinite(second).all(), f"{kind} second derivative at {length}"
+
+
+def test_the_contraction_writes_its_paths_in_the_enumerated_order(backend):
+    """The canonical path order is body order outermost, output irrep within.
+
+    The weights are stored the other way round, because that is how the forward
+    consumes them, so a file that took the storage order would hold the
+    canonical paths permuted. The round trip through one object cannot catch
+    it, since it splits by the counts it wrote itself: what catches it is
+    deriving the counts from the basis, the way another backend would.
+    """
+    descriptor = SymmetricContractionDescriptor(
+        irreps_in="0e+1o",
+        irreps_out="0e+1o",
+        correlation=3,
+        num_elements=2,
+        num_features=4,
+    )
+    operation = backend.make_symmetric_contraction(descriptor)
+    operation.initialize_weights(5)
+
+    derived = [
+        int(array.shape[0])
+        for order in range(1, descriptor.correlation + 1)
+        for array in reduced_symmetric_tensor_product_basis(
+            descriptor.irreps_in, order, descriptor.irreps_out
+        ).values()
+    ]
+    written = [int(count) for count in operation.to_canonical()["path_counts"]]
+    assert written == derived
+    assert sum(written) == descriptor.path_count
+
+
+def test_a_mixed_contraction_round_trips_through_a_fresh_instance(backend):
+    """The round trip that matters is into another object, not back into the
+    one that wrote the file."""
+    descriptor = SymmetricContractionDescriptor(
+        irreps_in="0e+1o",
+        irreps_out="0e+1o",
+        correlation=3,
+        num_elements=2,
+        num_features=4,
+    )
+    written = backend.make_symmetric_contraction(descriptor)
+    written.initialize_weights(7)
+    restored = backend.make_symmetric_contraction(descriptor)
+    restored.load_canonical(written.to_canonical())
+
+    features = torch.randn(6, 4 * Irreps.parse("0e+1o").dimension)
+    elements = torch.randint(0, 2, (6,))
+    assert torch.equal(written(features, elements), restored(features, elements))
+
+
+def radial_built_under(default, kind):
+    from mace_core.kernels.descriptors import RadialBasisDescriptor
+    from mace_torch.backends.reference import ReferenceBackend
+
+    previous = torch.get_default_dtype()
+    torch.set_default_dtype(default)
+    try:
+        return ReferenceBackend().make_radial_basis(
+            RadialBasisDescriptor(
+                kind=kind, num_basis=8, cutoff=3.5, precision="float64"
+            )
+        )
+    finally:
+        torch.set_default_dtype(previous)
+
+
+@pytest.mark.parametrize("kind", ["bessel", "gaussian", "chebyshev"])
+def test_a_radial_basis_holds_its_precision_whatever_the_default(kind):
+    """Its constants are made at construction. Built in a process whose
+    default is float32, a float64 basis used to hold float32 frequencies and
+    cutoffs, rounded, so the same model computed other numbers there."""
+    narrow = dict(radial_built_under(torch.float32, kind).named_buffers())
+    wide = dict(radial_built_under(torch.float64, kind).named_buffers())
+    assert narrow.keys() == wide.keys()
+    for name, value in narrow.items():
+        if value.is_floating_point():
+            assert value.dtype == torch.float64, name
+            assert torch.equal(value, wide[name]), name
+
+
+def test_building_a_radial_basis_leaves_the_default_alone():
+    previous = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float32)
+    try:
+        radial_built_under(torch.float32, "bessel")
+        assert torch.get_default_dtype() == torch.float32
+    finally:
+        torch.set_default_dtype(previous)
+
+
+def test_the_convolution_and_contraction_take_a_structure_with_no_edges(backend):
+    """A single atom has no edges, and the ops still return one row per node.
+    Found by the magnetic parity on an isolated iron atom: an inferred width
+    cannot be read off zero rows."""
+    convolution = backend.make_channelwise_tp_conv(
+        ChannelwiseTPConvDescriptor(
+            irreps_node="0e+1o", irreps_edge="0e+1o", irreps_out="0e+1o", num_features=3
+        )
+    )
+    no_edges = torch.zeros(0, dtype=torch.long)
+    message = convolution(
+        torch.randn(1, 12),
+        torch.randn(0, 4),
+        torch.randn(0, convolution.num_paths, 3),
+        no_edges,
+        no_edges,
+        1,
+    )
+    paths = channelwise_paths("0e+1o", "0e+1o", "0e+1o")
+    assert message.shape == (1, 3 * sum(path.irrep.dimension for path in paths))
+    assert not message.any()
+    on_no_rows = convolution(
+        torch.randn(0, 12),
+        torch.randn(0, 4),
+        torch.randn(0, convolution.num_paths, 3),
+        no_edges,
+        no_edges,
+        0,
+    )
+    assert on_no_rows.shape[0] == 0
+
+    contraction = backend.make_symmetric_contraction(
+        SymmetricContractionDescriptor(
+            irreps_in="0e+1o", irreps_out="0e", correlation=2, num_features=3
+        )
+    )
+    assert contraction(torch.randn(0, 12), no_edges).shape == (0, 3)
