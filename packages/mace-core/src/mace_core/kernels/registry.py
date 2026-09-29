@@ -10,6 +10,10 @@ reason to stop: it is recorded and listed. Asking for that backend by name is a
 different matter and raises, with the recorded reason, because the caller named
 something that cannot be delivered and a fallback would silently change the
 numbers.
+
+**A name is registered once.** Two distributions offering one name would make
+which of them a model is built with depend on installation order, so a
+duplicate is an error wherever it is seen, listing included.
 """
 
 from __future__ import annotations
@@ -18,10 +22,13 @@ from dataclasses import dataclass, field
 from importlib.metadata import entry_points
 from typing import Any, Literal
 
+from mace_core.kernels.canonical import KERNEL_SPEC_VERSION
+
 __all__ = [
     "ENTRY_POINT_GROUPS",
     "BackendNotAvailableError",
     "DiscoveredBackend",
+    "DuplicateBackendError",
     "available_backends",
     "get_backend",
 ]
@@ -38,6 +45,10 @@ ENTRY_POINT_GROUPS: dict[str, str] = {
 
 class BackendNotAvailableError(RuntimeError):
     """A backend was asked for by name and could not be delivered."""
+
+
+class DuplicateBackendError(RuntimeError):
+    """Two entry points register one name."""
 
 
 @dataclass(frozen=True)
@@ -66,8 +77,26 @@ def _discover(framework: str) -> list[DiscoveredBackend]:
             f"{framework!r} is not a framework this registry knows. The "
             f"frameworks are {sorted(ENTRY_POINT_GROUPS)}."
         )
+    entries = list(entry_points(group=group))
+    names = [entry.name for entry in entries]
+    repeated = sorted({name for name in names if names.count(name) > 1})
+    if repeated:
+        offered = {
+            name: sorted(
+                str(getattr(entry, "value", entry))
+                for entry in entries
+                if entry.name == name
+            )
+            for name in repeated
+        }
+        raise DuplicateBackendError(
+            f"{repeated} are registered more than once in the entry point "
+            f"group {group!r}: {offered}. Which one a model is built with "
+            f"would depend on installation order. Uninstall one, or register "
+            f"it under another name."
+        )
     found = []
-    for entry in entry_points(group=group):
+    for entry in entries:
         try:
             factory = entry.load()
         except Exception as failure:
@@ -112,4 +141,14 @@ def get_backend(name: str, framework: str = "torch") -> Any:
             f"not import on this machine: {backend.reason}. It is not being "
             f"substituted, because another backend is another set of numbers."
         )
-    return backend.factory()
+    built = backend.factory()
+    declared = built.capabilities().spec_version
+    if declared.split(".")[0] != KERNEL_SPEC_VERSION.split(".")[0]:
+        raise BackendNotAvailableError(
+            f"the {framework} kernel backend {name!r} implements version "
+            f"{declared} of the kernel contract, and this core is "
+            f"{KERNEL_SPEC_VERSION}. A major version apart means the ops or "
+            f"the weight format differ; install a release of the backend "
+            f"written for {KERNEL_SPEC_VERSION}."
+        )
+    return built

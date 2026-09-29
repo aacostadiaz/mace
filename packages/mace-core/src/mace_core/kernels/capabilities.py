@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from mace_core.kernels.canonical import KERNEL_SPEC_VERSION
 from mace_core.kernels.descriptors import (
     ActivationLayout,
     Descriptor,
@@ -57,6 +58,10 @@ class BackendCapabilities:
             Training on forces or stress needs the second derivative, so a
             backend without it is usable for inference and rejected at build
             time for that training, loudly.
+        spec_version: The version of the kernel contract the backend was
+            written against. A backend in its own distribution is released on
+            its own schedule, so it says which contract it implements and the
+            registry refuses one whose major version is not this core's.
     """
 
     ops: frozenset[str] = field(default_factory=frozenset)
@@ -70,6 +75,7 @@ class BackendCapabilities:
     native_layout: ActivationLayout = "mul_ir"
     bases: frozenset[str] = field(default_factory=lambda: frozenset({"reduced"}))
     supports_double_backward: bool = False
+    spec_version: str = KERNEL_SPEC_VERSION
 
     def supports(self, descriptor: Descriptor) -> bool:
         """Whether this backend can build exactly this op.
