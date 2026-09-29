@@ -18,11 +18,16 @@ descriptor, and checks:
   none;
 * **honesty**: a descriptor the backend declines is refused when asked for,
   rather than built into something that fails later;
+* **one layout for the chain**: the backend's native feature layout is one it
+  declares, and next to the reference the chain of ops resolves to exactly
+  one layout, so no op of it transposes its features on the way in or out;
 * on request, that the op **compiles without a graph break**, under
-  ``torch.compile(fullgraph=True)``, and that it **runs inside a captured CUDA
-  graph**, replaying to the same values. Both are what an inference loop does
-  with a model, and a kernel that syncs with the host or allocates on every
-  call fails them rather than degrading quietly.
+  ``torch.compile(fullgraph=True)``, that one compilation **serves every
+  size**, since the node and edge counts are meant to enter as symbolic
+  dimensions and never be read off a device tensor, and that it **runs inside
+  a captured CUDA graph**, replaying to the same values. All three are what an
+  inference loop does with a model, and a kernel that syncs with the host or
+  allocates on every call fails them rather than degrading quietly.
 
 A case the backend declines is recorded and skipped, never failed: declining
 is how a backend says an op is the reference's.
@@ -52,9 +57,11 @@ from mace_core.kernels.descriptors import (
 from mace_core.kernels.paths import channelwise_paths
 from mace_core.kernels.precision import Precision
 from mace_core.kernels.protocol import InternalWeights
+from mace_core.kernels.registry import get_backend
 from mace_core.kernels.reorder import decompose
 from torch import Tensor, nn
 
+from mace_torch.backends.composite import CompositeBackend
 from mace_torch.backends.layout import Layout, Terms
 from mace_torch.backends.reference import ReferenceBackend
 from mace_torch.nn.layout import expanded_irreps
@@ -351,7 +358,7 @@ def _flat_canonical(state: Any) -> list[Tensor]:
 
 
 def run_backend_conformance(
-    backend: Any,
+    backend: str | Any,
     *,
     device: str = "cpu",
     precision: Precision = "float64",
@@ -365,12 +372,15 @@ def run_backend_conformance(
     """Check every case against the reference. Raises on the first failure.
 
     Args:
-        backend: The backend under test.
+        backend: The backend under test, or the name it is registered under,
+            which is resolved through the entry points as a model would resolve
+            it.
         device: Where the ops run.
         precision: The dtype the cases are built at.
         cases: The descriptors. :func:`conformance_cases` by default.
         seed: For the weights, the inputs and the rotation.
-        compile_ops: Also compile each op with ``fullgraph=True``.
+        compile_ops: Also compile each op with ``fullgraph=True``, and check
+            that one compilation serves inputs of three sizes.
         cuda_graphs: Also capture each op in a CUDA graph and replay it.
         layout: The feature layout every case is built in. The op is fed and
             read through the canonical layout, so it is held to the same
@@ -384,9 +394,12 @@ def run_backend_conformance(
     Raises:
         AssertionError: Naming the op, the descriptor and the check.
     """
+    if isinstance(backend, str):
+        backend = get_backend(backend)
     dtype = _DTYPES[precision]
     reference = ReferenceBackend()
     capabilities = backend.capabilities()
+    _check_chain_layout(backend, capabilities)
     results = []
     given = cases or conformance_cases(precision)
     for number, descriptor in enumerate(replace(case, layout=layout) for case in given):
@@ -409,7 +422,7 @@ def run_backend_conformance(
             continue
         if make is None:
             raise AssertionError(f"{backend.name} claims {op} and has no make_{op}")
-        result = ConformanceResult(op, descriptor, True)
+        result = ConformanceResult(op, descriptor, True, ["layout"])
         where = f"{backend.name} {op} {descriptor}"
         candidate = make(descriptor).to(device)
         canonical = replace(descriptor, layout="mul_ir")
@@ -540,6 +553,8 @@ def run_backend_conformance(
                     compiled(*detached), mine.detach(), precision, f"{where} compiled"
                 )
             result.checks.append("compiles")
+            _check_every_size(runner, descriptor, detached, precision, where)
+            result.checks.append("one compile for every size")
         if cuda_graphs:
             _check_cuda_graph(runner, detached, mine.detach(), precision, where)
             result.checks.append("cuda graph")
@@ -707,6 +722,107 @@ def _check_weight_gradients(
     finally:
         reference.load_canonical(reference_state)
         candidate.load_canonical(candidate_state)
+
+
+def _check_chain_layout(backend: Any, capabilities: Any) -> None:
+    """The chain of ops runs in one layout, and it is one the backend declares.
+
+    What a model is built in is decided once, when the backend is resolved
+    next to the reference: the backend's native layout if the reference can
+    follow it, the canonical one if not. Either way every op of the chain
+    reads and writes that one layout, so no op transposes its features at its
+    boundary, and that only holds if the backend really builds its ops in the
+    layout it calls native.
+    """
+    native = capabilities.native_layout
+    if native not in capabilities.activation_layouts:
+        raise AssertionError(
+            f"{backend.name} calls {native!r} its native layout and declares "
+            f"only {sorted(capabilities.activation_layouts)}: the chain would "
+            f"be built in a layout its own ops decline."
+        )
+    chain = CompositeBackend(backend, ReferenceBackend()).layout.name
+    if chain not in capabilities.activation_layouts:
+        raise AssertionError(
+            f"{backend.name} next to the reference resolves the chain to "
+            f"{chain!r}, a layout its ops decline, so every op would transpose "
+            f"at its boundary."
+        )
+
+
+def _tiled(descriptor: Any, arguments: list[Any], copies: int) -> list[Any]:
+    """``copies`` independent copies of one op's inputs, side by side.
+
+    Node rows, edge rows and segment rows repeat, and the indices of each copy
+    point into its own nodes, so the result is the same op on a structure
+    ``copies`` times larger.
+    """
+    if copies == 1:
+        return list(arguments)
+
+    def rows(value: Tensor) -> Tensor:
+        return torch.cat([value] * copies)
+
+    if isinstance(descriptor, ChannelwiseTPConvDescriptor):
+        nodes, attributes, weights, sender, receiver, num_nodes = arguments
+        offsets = [num_nodes * copy for copy in range(copies)]
+        return [
+            rows(nodes),
+            rows(attributes),
+            rows(weights),
+            torch.cat([sender + offset for offset in offsets]),
+            torch.cat([receiver + offset for offset in offsets]),
+            num_nodes * copies,
+        ]
+    if isinstance(descriptor, SegmentReduceDescriptor):
+        values, index, segments = arguments
+        return [
+            rows(values),
+            torch.cat([index + segments * copy for copy in range(copies)]),
+            segments * copies,
+        ]
+    return [rows(value) if isinstance(value, Tensor) else value for value in arguments]
+
+
+def _check_every_size(
+    candidate: Any, descriptor: Any, arguments: list[Any], precision: str, where: str
+) -> None:
+    """One compilation for inputs of three sizes, each equal to eager.
+
+    Counted with dynamo's own counter, through AOT autograd, so the op's fake
+    implementation is what gets traced. Two frames rather than one is dynamo's
+    first-call behaviour and allowed; one per size means a size is being read
+    as a concrete number.
+
+    The sizes are two, three and five copies of the case, which keeps every
+    node, edge and row count off every channel and component count. Dynamo
+    gives two sizes that are equal at the first call one symbol, and a node
+    count that happened to equal the channel count would be recompiled the
+    first time the two parted, which is the test's coincidence rather than
+    the op's.
+    """
+    from torch._dynamo.testing import CompileCounterWithBackend
+
+    torch._dynamo.reset()
+    counter = CompileCounterWithBackend("aot_eager")
+    compiled = torch.compile(candidate, backend=counter, fullgraph=True, dynamic=True)
+    sizes = (2, 3, 5)
+    for copies in sizes:
+        tiled = _tiled(descriptor, arguments, copies)
+        with torch.no_grad():
+            _close(
+                compiled(*tiled),
+                candidate(*tiled),
+                precision,
+                f"{where} compiled at {copies} times the size",
+            )
+    torch._dynamo.reset()
+    if counter.frame_count > 2:
+        raise AssertionError(
+            f"{where}: {len(sizes)} sizes compiled {counter.frame_count} times. "
+            f"The sizes are meant to enter as symbolic dimensions; one graph "
+            f"per size means one of them is read as a concrete number."
+        )
 
 
 def _check_cuda_graph(
