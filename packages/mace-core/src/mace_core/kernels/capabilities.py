@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from mace_core.kernels.canonical import KERNEL_SPEC_VERSION
 from mace_core.kernels.descriptors import (
     ActivationLayout,
     Descriptor,
@@ -61,6 +62,10 @@ class BackendCapabilities:
             they compute in, as a fused kernel with its own accumulator can. A
             backend without it is handed a precision floor as the dtype to
             compute in, and holds that op's weights in it.
+        spec_version: The version of the kernel contract the backend was
+            written against. A backend in its own distribution is released on
+            its own schedule, so it says which contract it implements and the
+            registry refuses one whose major version is not this core's.
     """
 
     ops: frozenset[str] = field(default_factory=frozenset)
@@ -75,6 +80,7 @@ class BackendCapabilities:
     bases: frozenset[str] = field(default_factory=lambda: frozenset({"reduced"}))
     supports_double_backward: bool = False
     wide_accumulation: bool = False
+    spec_version: str = KERNEL_SPEC_VERSION
 
     def supports(self, descriptor: Descriptor) -> bool:
         """Whether this backend can build exactly this op.

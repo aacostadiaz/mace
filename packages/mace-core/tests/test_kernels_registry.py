@@ -21,6 +21,7 @@ from mace_core.kernels import (
     BackendCapabilities,
     BackendNotAvailableError,
     ChannelwiseTPConvDescriptor,
+    DuplicateBackendError,
     LinearDescriptor,
     RadialBasisDescriptor,
     SphericalHarmonicsDescriptor,
@@ -238,6 +239,49 @@ def test_asking_for_a_name_nobody_registered_lists_what_there_is(registered):
     message = str(caught.value)
     assert "['pretend']" in message
     assert ENTRY_POINT_GROUPS["torch"] in message
+
+
+@pytest.mark.parametrize("ask", ["list", "resolve"])
+def test_a_name_registered_twice_is_an_error_everywhere(registered, ask):
+    """Which of two distributions a model is built with must not depend on
+    which one happened to be installed last."""
+    registered(
+        PretendEntryPoint("pretend", PretendBackend),
+        PretendEntryPoint("pretend", PretendBackend),
+        PretendEntryPoint("other", PretendBackend),
+    )
+    with pytest.raises(DuplicateBackendError, match="'pretend'"):
+        if ask == "list":
+            available_backends("torch")
+        else:
+            get_backend("other", "torch")
+
+
+@dataclass
+class ElsewhereBackend:
+    name: str = "elsewhere"
+    spec_version: str = "2.0"
+
+    def capabilities(self):
+        return BackendCapabilities(ops=DISPATCHED_OPS, spec_version=self.spec_version)
+
+
+def test_a_backend_for_another_major_version_is_refused(registered):
+    registered(PretendEntryPoint("elsewhere", ElsewhereBackend))
+    with pytest.raises(BackendNotAvailableError, match=r"version 2\.0"):
+        get_backend("elsewhere", "torch")
+
+
+def test_a_minor_version_apart_is_the_same_contract(registered):
+    minor = f"{KERNEL_SPEC_VERSION.split('.')[0]}.99"
+    registered(
+        PretendEntryPoint("elsewhere", lambda: ElsewhereBackend(spec_version=minor))
+    )
+    assert get_backend("elsewhere", "torch").name == "elsewhere"
+
+
+def test_a_backend_declares_the_current_contract_by_default():
+    assert BackendCapabilities().spec_version == KERNEL_SPEC_VERSION
 
 
 def test_an_unknown_framework_is_refused_rather_than_searched():
