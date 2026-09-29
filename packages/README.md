@@ -192,6 +192,7 @@ reference in `mace_torch/backends/reference/backend.py` is the one to copy.
 | File | What is in it |
 |---|---|
 | `mace_core/__init__.py` | The package version; the public surface is imported from the submodules. |
+| `mace_core/artifacts.py` | Resolving an artifact to a file: the cache, its names old and new, and the one download. |
 | `mace_core/clebsch_gordan/__init__.py` | The public surface of the basis: path order and normalization conventions. |
 | `mace_core/clebsch_gordan/coefficients.py` | Complex Clebsch-Gordan and Wigner 3j coefficients from the Racah formula. |
 | `mace_core/clebsch_gordan/conversion.py` | Converting weights between the full and reduced bases, and between layouts. |

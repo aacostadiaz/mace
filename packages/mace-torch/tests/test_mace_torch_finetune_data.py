@@ -20,7 +20,7 @@ from mace_core.elements import AtomicNumberTable
 from mace_core.observables import DEFAULT_CATALOGUE
 from mace_torch.data import GraphDataset
 from mace_torch.finetune.foundation import FoundationContext
-from mace_torch.finetune.replay import cached_path
+from mace_torch.finetune.replay import legacy_cached_path
 from mace_torch.train import DataStageError, run_data_stage
 
 CATALOGUE = DEFAULT_CATALOGUE
@@ -67,7 +67,7 @@ def waters(count: int, seed: int = 0, isolated: bool = True, reserved: bool = Fa
 
 def publish_replay(count: int):
     """Put a replay dataset in the cache, as a login node or a legacy run does."""
-    path = cached_path("mp")
+    path = legacy_cached_path("mp")
     path.parent.mkdir(parents=True, exist_ok=True)
     write(path, waters(count, seed=5, isolated=False, reserved=True), format="extxyz")
 
