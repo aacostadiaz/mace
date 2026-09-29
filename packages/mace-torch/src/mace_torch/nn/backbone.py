@@ -39,12 +39,43 @@ from mace_core.kernels.precision import Precision
 from mace_core.observables import InputSpec
 from torch import Tensor, nn
 
-from mace_torch.nn.interaction import InteractionBlock, ResidualInteractionBlock
+from mace_torch.nn.interaction import (
+    InteractionBlock,
+    NonLinearInteractionBlock,
+    ResidualInteractionBlock,
+)
 from mace_torch.nn.layout import expanded_irreps
 from mace_torch.nn.node_inputs import NodeInputEmbedding
 from mace_torch.nn.product_basis import EquivariantProductBasisBlock
 
 __all__ = ["MACEBackbone"]
+
+
+def _scalars_of(irreps: str) -> str:
+    """The even scalars of a whole declaration, as one term."""
+    count = sum(
+        mul
+        for mul, ir in Irreps.parse(irreps).terms
+        if ir.degree == 0 and ir.parity == 1
+    )
+    return f"{count}x0e"
+
+
+def _per_channel(irreps: str) -> tuple[str, int]:
+    """A whole declaration as one channel's and the channel count.
+
+    Raises:
+        ValueError: If its terms do not share one multiplicity, which is what
+            a convolution with one radial weight per channel and path needs.
+    """
+    terms = Irreps.parse(irreps).terms
+    multiplicities = {mul for mul, _ in terms}
+    if len(multiplicities) != 1:
+        raise ValueError(
+            f"convolution_irreps is {irreps!r}; every term needs the same "
+            f"multiplicity, such as '128x0e+128x1o'."
+        )
+    return "+".join(str(ir) for _, ir in terms), multiplicities.pop()
 
 
 class MACEBackbone(nn.Module):
@@ -85,6 +116,17 @@ class MACEBackbone(nn.Module):
             density learned per atom rather than by the average neighbour
             count, as the frozen tree's density blocks do.
         learned_density: The same for every later layer.
+        nonlinear_first_layer: Build the first layer as a
+            :class:`NonLinearInteractionBlock`: a convolution conditioned on
+            both elements, normalized by a learned density and gated. It
+            carries its skip to the product basis.
+        nonlinear: The same for every later layer.
+        convolution_irreps: What a nonlinear layer convolves, as a whole
+            declaration with one multiplicity for every term, such as
+            ``"128x0e+128x1o"``. ``None`` convolves the node features at their
+            own width.
+        narrow_first_convolution: Convolve only the scalars of
+            ``convolution_irreps`` in the first layer, at its multiplicity.
         full_last_layer: Keep every irrep in the last layer's features rather
             than only its scalars. A model that reads more than invariants off
             the last layer needs it: a charge-aware model reads dipoles there.
@@ -116,6 +158,10 @@ class MACEBackbone(nn.Module):
         residual_first_layer: bool = False,
         learned_density_first_layer: bool = False,
         learned_density: bool = False,
+        nonlinear_first_layer: bool = False,
+        nonlinear: bool = False,
+        convolution_irreps: str | None = None,
+        narrow_first_convolution: bool = False,
         full_last_layer: bool = False,
         element_agnostic_product: bool = False,
         edge_axes: tuple[int, int, int] = (0, 1, 2),
@@ -178,7 +224,35 @@ class MACEBackbone(nn.Module):
             last = layer == num_layers - 1 and not full_last_layer
             product_per_channel = "0e" if last else hidden_irreps
             density = learned_density_first_layer if layer == 0 else learned_density
-            if layer == 0 and not residual_first_layer:
+            if nonlinear_first_layer if layer == 0 else nonlinear:
+                convolved = convolution_irreps
+                if layer == 0:
+                    convolved = (
+                        _scalars_of(convolution_irreps)
+                        if narrow_first_convolution and convolution_irreps
+                        else None
+                    )
+                irreps_up, num_up_features = (
+                    _per_channel(convolved)
+                    if convolved
+                    else (node_per_channel, num_features)
+                )
+                interactions.append(
+                    NonLinearInteractionBlock(
+                        backend,
+                        irreps_node=node_per_channel,
+                        irreps_up=irreps_up,
+                        irreps_edge=edge_irreps,
+                        irreps_target=edge_irreps,
+                        irreps_skip_out=product_per_channel,
+                        num_radial=num_radial,
+                        num_features=num_features,
+                        num_up_features=num_up_features,
+                        num_elements=len(self.atomic_numbers),
+                        precision=precision,
+                    )
+                )
+            elif layer == 0 and not residual_first_layer:
                 interactions.append(
                     InteractionBlock(
                         backend,
