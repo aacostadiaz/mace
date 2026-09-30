@@ -170,6 +170,10 @@ class ModelMetadata(_Record):
     data: DataSummary = Field(default_factory=DataSummary)
     #: Keyed by head name, as in the config; a single-head model has one entry.
     heads: dict[str, HeadSummary] = Field(default_factory=dict)
+    #: The chemical symbols of the model's element table, ascending in atomic
+    #: number. A model that reads out no energy has no isolated-atom energies
+    #: to read the table off. Empty in a record written before it was kept.
+    elements: list[str] = Field(default_factory=list)
     #: DOI of the model itself, not of the papers describing it.
     doi: str | None = None
     citations: list[Citation] = Field(default_factory=list)
