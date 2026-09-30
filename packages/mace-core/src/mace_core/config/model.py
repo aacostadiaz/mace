@@ -35,6 +35,7 @@ from mace_core.kernels.descriptors import RadialKind
 
 __all__ = [
     "ClebschGordanBasis",
+    "GraphFeatureConfig",
     "MagneticConfig",
     "ModelConfig",
     "PolarConfig",
@@ -66,12 +67,40 @@ class ReadoutConfig(FrozenSection):
             summing a readout per layer.
         from_embedding: Add a readout on the node embedding, before any
             interaction.
+        bias: Give the last readout a biased middle map, gated again, and a
+            biased output map.
     """
 
     mlp_irreps: str = "16x0e"
     gate: str = "silu"
     last_only: bool = False
     from_embedding: bool = False
+    bias: bool = False
+
+
+class GraphFeatureConfig(FrozenSection):
+    """One input embedded beside the elements, such as the total charge.
+
+    Args:
+        name: The graph key it is read from.
+        kind: ``categorical`` for a small integer label, ``continuous`` for a
+            real value.
+        embedding_dim: The width it is embedded to.
+        num_classes: How many labels, for a categorical input.
+        input_dim: How many components, for a continuous input.
+        per: ``graph`` for one value per structure, ``atom`` for one per atom.
+        offset: Added to a categorical value before it is used as a label.
+        use_bias: Whether a continuous input's maps carry biases.
+    """
+
+    name: str
+    kind: Literal["categorical", "continuous"]
+    embedding_dim: int
+    num_classes: int = 0
+    input_dim: int = 1
+    per: Literal["graph", "atom"] = "graph"
+    offset: int = 0
+    use_bias: bool = True
 
 
 class PolarConfig(FrozenSection):
@@ -231,6 +260,10 @@ class ModelConfig(FrozenSection):
         clebsch_gordan_basis: Model state, not a host property.
         scaling: How the output layer scales its head.
         readout: The readout shape.
+        graph_features: Inputs embedded and added to the element embedding,
+            in the order they are concatenated. A list rather than a mapping,
+            because the order is part of the model and a mapping is written
+            with its keys sorted.
         backend: The kernel backend by name. One field, where legacy has
             three flags whose third only chose between building in a layout
             and converting after, and canonical weights remove the conversion.
@@ -263,6 +296,7 @@ class ModelConfig(FrozenSection):
     clebsch_gordan_basis: ClebschGordanBasis = "reduced"
     scaling: ScalingMethod = "rms_forces"
     readout: ReadoutConfig = ReadoutConfig()
+    graph_features: tuple[GraphFeatureConfig, ...] = ()
     backend: str = "reference"
     polar: PolarConfig = PolarConfig()
     magnetic: MagneticConfig = MagneticConfig()
