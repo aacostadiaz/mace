@@ -19,12 +19,12 @@ import torch
 from mace_core.config.loss import LossConfig
 from mace_core.data.configuration import Configuration
 from mace_core.elements import AtomicNumberTable
-from mace_core.observables import load_default_catalogue, resolve_requested
+from mace_core.observables import DEFAULT_CATALOGUE, resolve_requested
 from mace_core.outputs import MACEOutput
 from mace_torch.data import GraphDataset, collate_training, target_specs
 from mace_torch.train import RunningMetrics, build_loss, metric_specs
 
-CATALOGUE = load_default_catalogue()
+CATALOGUE = DEFAULT_CATALOGUE
 REQUESTED = resolve_requested(["energy", "forces"], CATALOGUE)
 SPECS = target_specs(REQUESTED)
 Z_TABLE = AtomicNumberTable([1])

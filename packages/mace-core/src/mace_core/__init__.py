@@ -41,16 +41,17 @@ from importlib.metadata import PackageNotFoundError, version
 from mace_core.config import ConfigError, ConfigSection, ReforgeBaseConfig
 from mace_core.metadata import ModelMetadata, format_citations
 from mace_core.observables import (
+    DEFAULT_CATALOGUE,
     DerivativeSpec,
     InputSpec,
     ObservableCatalogue,
     ObservableSpec,
-    load_default_catalogue,
 )
 from mace_core.outputs import MACEOutput
 from mace_core.stages import BuiltModel, DataBundle, EpochRecord, TrainedModel
 
 __all__ = [
+    "DEFAULT_CATALOGUE",
     "BuiltModel",
     "ConfigError",
     "ConfigSection",
@@ -66,7 +67,6 @@ __all__ = [
     "TrainedModel",
     "__version__",
     "format_citations",
-    "load_default_catalogue",
 ]
 
 #: Version of the installed `mace-core` distribution. Read from installed metadata

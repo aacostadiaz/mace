@@ -17,13 +17,13 @@ from ase.io import write
 from conftest import fp64_only
 from mace_core.config.resolved import ResolvedConfig
 from mace_core.elements import AtomicNumberTable
-from mace_core.observables import load_default_catalogue
+from mace_core.observables import DEFAULT_CATALOGUE
 from mace_torch.data import GraphDataset
 from mace_torch.finetune.foundation import FoundationContext
 from mace_torch.finetune.replay import cached_path
 from mace_torch.train import DataStageError, run_data_stage
 
-CATALOGUE = load_default_catalogue()
+CATALOGUE = DEFAULT_CATALOGUE
 HYDROGEN, OXYGEN = -13.6, -2040.0
 WATER = np.array([[0.0, 0.0, 0.0], [0.96, 0.0, 0.0], [-0.24, 0.93, 0.0]])
 

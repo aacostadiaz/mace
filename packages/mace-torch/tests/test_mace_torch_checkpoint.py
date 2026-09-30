@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 import torch
 from conftest import fp64_only
-from mace_core.observables import load_default_catalogue
+from mace_core.observables import DEFAULT_CATALOGUE
 from mace_torch.serialization import CheckpointError, canonical_state
 from mace_torch.train import (
     RunState,
@@ -32,7 +32,7 @@ from mace_torch.train.ema import ExponentialMovingAverage
 from mace_torch.train.optimizers import build_optimizer, build_scheduler
 from test_mace_torch_training_pipeline import configuration
 
-CATALOGUE = load_default_catalogue()
+CATALOGUE = DEFAULT_CATALOGUE
 SOURCES = Path(__file__).resolve().parents[1] / "src" / "mace_torch"
 
 

@@ -21,7 +21,7 @@ from mace_core.clebsch_gordan.conversion import full_to_reduced
 from mace_core.clebsch_gordan.reduced_basis import (
     reduced_symmetric_tensor_product_basis,
 )
-from mace_core.observables import load_default_catalogue
+from mace_core.observables import DEFAULT_CATALOGUE
 from mace_core.weights.neutral_format import read_neutral, write_neutral
 from mace_torch.deploy.legacy import (
     ExtractionFailed,
@@ -44,7 +44,7 @@ from tests.parity.test_fm00_training_step import load_anchor
 
 GOLDEN = Path(__file__).resolve().parents[1] / "golden"
 FIXTURES = GOLDEN / "fixtures"
-CATALOGUE = load_default_catalogue()
+CATALOGUE = DEFAULT_CATALOGUE
 ANCHORS = ("tiny_scaleshift", "tiny_mace")
 REFERENCE = tolerance("fp64_cpu_reference")
 

@@ -29,6 +29,7 @@ import numpy as np
 __all__ = [
     "GRAPH_INPUT_DEFAULTS",
     "GRAPH_SCHEMA",
+    "NODE_INPUT_DEFAULTS",
     "FieldSpec",
     "GraphInfo",
     "GraphValidationError",
@@ -195,6 +196,16 @@ GRAPH_SCHEMA: Mapping[str, FieldSpec] = {
         "The applied electric field on each structure, in V/Angstrom. Present "
         "only for a model that reads it.",
     ),
+    "charges": FieldSpec(
+        ("n_nodes",),
+        "float64",
+        False,
+        "nodes",
+        "zero",
+        "A fixed charge on each atom, in units of the elementary charge, read "
+        "from the structure's charge labels. Present only for a model that "
+        "reads it.",
+    ),
 }
 
 #: What a structure that does not say has, for each per-structure input a model
@@ -205,6 +216,10 @@ GRAPH_INPUT_DEFAULTS: Mapping[str, tuple[float, ...]] = {
     "total_spin": (1.0,),
     "external_field": (0.0, 0.0, 0.0),
 }
+
+#: The same, for each per-atom input: the value every atom of a structure that
+#: does not say has.
+NODE_INPUT_DEFAULTS: Mapping[str, float] = {"charges": 0.0}
 
 
 class GraphValidationError(ValueError):

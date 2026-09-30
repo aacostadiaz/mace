@@ -16,14 +16,14 @@ from mace_core.config.resolved import ResolvedConfig
 from mace_core.data.backend import DatasetStatistics
 from mace_core.elements import AtomicNumberTable, ResolvedE0s
 from mace_core.neighbors import get_neighborhood
-from mace_core.observables import load_default_catalogue
+from mace_core.observables import DEFAULT_CATALOGUE
 from mace_torch.finetune.freeze import FREEZE_LEVELS, freeze, frozen_groups
 from mace_torch.finetune.lora import inject_lora, merge_lora
 from mace_torch.serialization import canonical_state
 from mace_torch.train.model_stage import build_model
 from mace_torch.train.optimizers import parameter_groups
 
-CATALOGUE = load_default_catalogue()
+CATALOGUE = DEFAULT_CATALOGUE
 WATER = np.array([[0.0, 0.0, 0.0], [0.96, 0.0, 0.0], [-0.24, 0.93, 0.0]])
 
 

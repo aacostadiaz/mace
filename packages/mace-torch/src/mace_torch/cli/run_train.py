@@ -24,7 +24,7 @@ from pathlib import Path
 
 import torch.distributed as dist
 from mace_core.config.resolved import ResolvedConfig
-from mace_core.observables import load_default_catalogue
+from mace_core.observables import DEFAULT_CATALOGUE
 from mace_core.stages import TrainedModel
 
 from mace_torch.finetune.foundation import read_foundation
@@ -102,7 +102,7 @@ def run(config: ResolvedConfig) -> TrainedModel:
     processes = init_distributed(
         config.runtime.distributed, config.runtime.launcher, config.runtime.device
     )
-    catalogue = load_default_catalogue()
+    catalogue = DEFAULT_CATALOGUE
     foundation = (
         read_foundation(config.finetune.foundation_model, catalogue)
         if config.finetune.foundation_model is not None

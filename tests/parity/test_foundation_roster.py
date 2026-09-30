@@ -32,7 +32,7 @@ import numpy as np
 import pytest
 import torch
 from mace_core.data.configuration import Configuration
-from mace_core.observables import load_default_catalogue
+from mace_core.observables import DEFAULT_CATALOGUE
 from mace_torch.data.batch import collate_training
 from mace_torch.data.graphs import graph_from_configuration
 from mace_torch.deploy.neutral_io import import_neutral
@@ -43,7 +43,7 @@ from tests.golden import foundation_artifacts as fa
 from tests.golden.harness import load_fixtures, tolerance
 from tests.parity.test_fm_convert_legacy import EXTRACTOR, FIXTURES, extract_here
 
-CATALOGUE = load_default_catalogue()
+CATALOGUE = DEFAULT_CATALOGUE
 
 #: The in-process bound: ten digits, relative to the largest component of
 #: the quantity on that structure.

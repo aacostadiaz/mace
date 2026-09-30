@@ -16,7 +16,7 @@ import pytest
 import torch
 from e3nn import o3
 from mace import modules
-from mace_core.observables import load_default_catalogue
+from mace_core.observables import DEFAULT_CATALOGUE
 from mace_torch.deploy.neutral_io import import_neutral
 
 from tests.golden.build_mace_anchor import (
@@ -28,7 +28,7 @@ from tests.golden.build_mace_anchor import (
 )
 from tests.parity.test_fm_convert_legacy import extract_here
 
-CATALOGUE = load_default_catalogue()
+CATALOGUE = DEFAULT_CATALOGUE
 
 CHARGE = {
     "type": "categorical",

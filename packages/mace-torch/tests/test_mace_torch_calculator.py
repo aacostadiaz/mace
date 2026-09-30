@@ -43,10 +43,10 @@ def fixture_checkpoints(tmp_path_factory):
                     "model": config.model.model_copy(update={"r_max": r_max}),
                 }
             )
-            from mace_core.observables import load_default_catalogue
+            from mace_core.observables import DEFAULT_CATALOGUE
             from mace_torch.train import run_data_stage, run_model_stage
 
-            catalogue = load_default_catalogue()
+            catalogue = DEFAULT_CATALOGUE
             data = run_data_stage(config, catalogue)
             built = run_model_stage(config, data, catalogue)
             run_train_stage(config, built, checkpoint_path=directory / f"mace_{name}")
@@ -93,6 +93,7 @@ def test_the_results_have_the_frozen_tree_s_names_and_shapes(checkpoints, period
         "node_energy",
         "forces",
         "stress",
+        "interaction_energy",
     }
     assert isinstance(results["energy"], float)
     assert results["free_energy"] == results["energy"]
@@ -163,6 +164,7 @@ def test_each_result_is_converted_by_its_own_dimension(checkpoints):
         "stress": energy / length**3,
         "stresses": energy / length**3,
         "virials": energy,
+        "interaction_energy": energy,
     }
     assert set(factors) == set(plain)
     for key, factor in factors.items():

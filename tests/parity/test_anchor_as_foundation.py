@@ -25,7 +25,7 @@ from mace_core.config.resolved import ResolvedConfig
 from mace_core.data.backend import DatasetStatistics
 from mace_core.elements import AtomicNumberTable, ResolvedE0s
 from mace_core.metadata import ConfigRecord, HeadSummary, ModelMetadata, Provenance
-from mace_core.observables import load_default_catalogue
+from mace_core.observables import DEFAULT_CATALOGUE
 from mace_torch.finetune.foundation import read_foundation
 from mace_torch.train import (
     evaluate,
@@ -45,7 +45,7 @@ from tests.parity.fm00_convert import (
 )
 from tests.parity.test_fm00_training_step import load_anchor
 
-CATALOGUE = load_default_catalogue()
+CATALOGUE = DEFAULT_CATALOGUE
 TRAIN_SET = (
     Path(__file__).resolve().parents[1] / "golden" / "fixtures" / "tiny_train.xyz"
 )
