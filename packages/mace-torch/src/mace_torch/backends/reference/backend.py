@@ -672,8 +672,18 @@ class ReferenceRadialBasis(nn.Module):
         finally:
             torch.set_default_dtype(previous)
 
-    def forward(self, lengths: Tensor) -> Tensor:
-        return self.basis(lengths) * self.cutoff(lengths)
+    def forward(self, lengths: Tensor, basis_lengths: Tensor | None = None) -> Tensor:
+        """The basis times the envelope, both ``[n_edges, 1]`` in, Angstrom,
+        or the bare basis when the descriptor does not apply the cutoff.
+
+        The envelope is always evaluated on ``lengths``. The basis is
+        evaluated on ``basis_lengths`` when given, which is how a distance
+        transform reaches the basis without reaching the cutoff.
+        """
+        basis = self.basis(lengths if basis_lengths is None else basis_lengths)
+        if not self.descriptor.apply_cutoff:
+            return basis
+        return basis * self.cutoff(lengths)
 
 
 class ReferenceBackend:

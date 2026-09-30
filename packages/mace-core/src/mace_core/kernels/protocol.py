@@ -163,7 +163,12 @@ class KernelBackend(Protocol):
         ...
 
     def make_radial_basis(self, descriptor: RadialBasisDescriptor) -> Any | None:
-        """The radial embedding, or ``None`` to leave it to the reference."""
+        """The radial embedding, or ``None`` to leave it to the reference.
+
+        Called as ``op(lengths, basis_lengths=None)``: the cutoff envelope on
+        ``lengths``, the basis on ``basis_lengths`` when a distance transform
+        supplies them and on ``lengths`` otherwise.
+        """
         ...
 
     def make_interaction_layer(self, descriptors: tuple[Any, ...]) -> Any | None:

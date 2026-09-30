@@ -25,7 +25,7 @@ Four things this does not do, each replacing something the frozen tree does:
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any
+from typing import Any, Literal
 
 import torch
 from mace_core.clebsch_gordan.irreps import Irreps
@@ -40,12 +40,45 @@ from mace_core.observables import InputSpec
 from torch import Tensor, nn
 
 from mace_torch.backends.layout import layout_of
-from mace_torch.nn.interaction import InteractionBlock, ResidualInteractionBlock
+from mace_torch.nn.interaction import (
+    DEFAULT_RADIAL_HIDDEN,
+    InteractionBlock,
+    NonLinearInteractionBlock,
+    ResidualInteractionBlock,
+)
 from mace_torch.nn.layout import expanded_irreps
 from mace_torch.nn.node_inputs import NodeInputEmbedding
 from mace_torch.nn.product_basis import EquivariantProductBasisBlock
+from mace_torch.nn.radial import AgnesiTransform, PolynomialCutoff, SoftTransform
 
 __all__ = ["MACEBackbone"]
+
+
+def _scalars_of(irreps: str) -> str:
+    """The even scalars of a whole declaration, as one term."""
+    count = sum(
+        mul
+        for mul, ir in Irreps.parse(irreps).terms
+        if ir.degree == 0 and ir.parity == 1
+    )
+    return f"{count}x0e"
+
+
+def _per_channel(irreps: str) -> tuple[str, int]:
+    """A whole declaration as one channel's and the channel count.
+
+    Raises:
+        ValueError: If its terms do not share one multiplicity, which is what
+            a convolution with one radial weight per channel and path needs.
+    """
+    terms = Irreps.parse(irreps).terms
+    multiplicities = {mul for mul, _ in terms}
+    if len(multiplicities) != 1:
+        raise ValueError(
+            f"convolution_irreps is {irreps!r}; every term needs the same "
+            f"multiplicity, such as '128x0e+128x1o'."
+        )
+    return "+".join(str(ir) for _, ir in terms), multiplicities.pop()
 
 
 class MACEBackbone(nn.Module):
@@ -67,6 +100,15 @@ class MACEBackbone(nn.Module):
         cutoff_order: The order of the envelope that takes it to zero at the
             cutoff. It comes from the model's cutoff setting, not from the
             basis.
+        distance_transform: ``"agnesi"`` or ``"soft"`` evaluates the radial
+            basis on that transform of each length, scaled by the pair's
+            covalent radii, and the cutoff envelope on the length itself.
+            ``"none"`` by default.
+        apply_cutoff: Multiply the cutoff envelope into the radial basis, the
+            default. Off, every interaction multiplies it into the output of
+            its radial networks instead.
+        radial_hidden: The hidden widths of every interaction's radial
+            network.
         precision: The dtype name every op is built at.
         node_inputs: Declared per-node input streams to mix into the features
             before the first layer. Nothing about them is special-cased: each
@@ -76,6 +118,27 @@ class MACEBackbone(nn.Module):
             returning the features to carry into the next layer. This is where
             a domain-decomposed run slices off its ghost nodes. Absent by
             default, and when absent the forward is the hook-free path exactly.
+        residual_first_layer: Build the first layer as every later one is,
+            with the skip taken from its input, the element embedding, and
+            added by the product basis. The frozen tree does so when its first
+            interaction is ``RealAgnosticResidualInteractionBlock``, its default
+            and what MACE-MP-0 was trained with; otherwise the first layer's
+            skip is applied to the message and replaces it.
+        learned_density_first_layer: Normalize the first layer's messages by a
+            density learned per atom rather than by the average neighbour
+            count, as the frozen tree's density blocks do.
+        learned_density: The same for every later layer.
+        nonlinear_first_layer: Build the first layer as a
+            :class:`NonLinearInteractionBlock`: a convolution conditioned on
+            both elements, normalized by a learned density and gated. It
+            carries its skip to the product basis.
+        nonlinear: The same for every later layer.
+        convolution_irreps: What a nonlinear layer convolves, as a whole
+            declaration with one multiplicity for every term, such as
+            ``"128x0e+128x1o"``. ``None`` convolves the node features at their
+            own width.
+        narrow_first_convolution: Convolve only the scalars of
+            ``convolution_irreps`` in the first layer, at its multiplicity.
         last_layer_irreps: One channel's irreps in the last layer's features.
             Only its scalars by default, since an energy reads nothing else
             off it. A model that reads more keeps more: a charge-aware model
@@ -102,10 +165,20 @@ class MACEBackbone(nn.Module):
         avg_num_neighbors: float = 1.0,
         radial_kind: RadialKind = "bessel",
         cutoff_order: int = 6,
+        distance_transform: Literal["none", "agnesi", "soft"] = "none",
+        apply_cutoff: bool = True,
+        radial_hidden: Sequence[int] = DEFAULT_RADIAL_HIDDEN,
         precision: Precision = "float64",
         locality: Callable[[Tensor, Mapping[str, Any]], Tensor] | None = None,
         node_inputs: Sequence[InputSpec] = (),
         last_layer_irreps: str = "0e",
+        residual_first_layer: bool = False,
+        learned_density_first_layer: bool = False,
+        learned_density: bool = False,
+        nonlinear_first_layer: bool = False,
+        nonlinear: bool = False,
+        convolution_irreps: str | None = None,
+        narrow_first_convolution: bool = False,
         element_agnostic_product: bool = False,
         edge_axes: tuple[int, int, int] = (0, 1, 2),
     ) -> None:
@@ -137,8 +210,25 @@ class MACEBackbone(nn.Module):
                 num_basis=num_radial,
                 cutoff=cutoff,
                 cutoff_order=cutoff_order,
+                apply_cutoff=apply_cutoff,
                 precision=precision,
             )
+        )
+        # Without the envelope in the basis, the interactions multiply it into
+        # what their radial networks produce.
+        self.envelope = (
+            None
+            if apply_cutoff
+            else PolynomialCutoff(r_max=cutoff, polynomial_order=cutoff_order)
+        )
+        transforms = {"agnesi": AgnesiTransform, "soft": SoftTransform}
+        if distance_transform != "none" and distance_transform not in transforms:
+            raise ValueError(
+                f"distance_transform is {distance_transform!r}; it is 'none', "
+                f"'agnesi' or 'soft'."
+            )
+        self.distance_transform = (
+            transforms[distance_transform]() if distance_transform != "none" else None
         )
         # The embedding produces scalars only, one per channel. The higher
         # irreps appear for the first time out of the first convolution, which
@@ -167,7 +257,37 @@ class MACEBackbone(nn.Module):
             node_per_channel = self.embedding_irreps if layer == 0 else hidden_irreps
             last = layer == num_layers - 1
             product_per_channel = last_layer_irreps if last else hidden_irreps
-            if layer == 0:
+            density = learned_density_first_layer if layer == 0 else learned_density
+            if nonlinear_first_layer if layer == 0 else nonlinear:
+                convolved = convolution_irreps
+                if layer == 0:
+                    convolved = (
+                        _scalars_of(convolution_irreps)
+                        if narrow_first_convolution and convolution_irreps
+                        else None
+                    )
+                irreps_up, num_up_features = (
+                    _per_channel(convolved)
+                    if convolved
+                    else (node_per_channel, num_features)
+                )
+                interactions.append(
+                    NonLinearInteractionBlock(
+                        backend,
+                        irreps_node=node_per_channel,
+                        irreps_up=irreps_up,
+                        irreps_edge=edge_irreps,
+                        irreps_target=edge_irreps,
+                        irreps_skip_out=product_per_channel,
+                        num_radial=num_radial,
+                        num_features=num_features,
+                        num_up_features=num_up_features,
+                        num_elements=len(self.atomic_numbers),
+                        radial_hidden=tuple(radial_hidden),
+                        precision=precision,
+                    )
+                )
+            elif layer == 0 and not residual_first_layer:
                 interactions.append(
                     InteractionBlock(
                         backend,
@@ -178,7 +298,9 @@ class MACEBackbone(nn.Module):
                         num_features=num_features,
                         num_elements=len(self.atomic_numbers),
                         avg_num_neighbors=avg_num_neighbors,
+                        radial_hidden=tuple(radial_hidden),
                         precision=precision,
+                        learned_density=density,
                     )
                 )
             else:
@@ -193,7 +315,9 @@ class MACEBackbone(nn.Module):
                         num_features=num_features,
                         num_elements=len(self.atomic_numbers),
                         avg_num_neighbors=avg_num_neighbors,
+                        radial_hidden=tuple(radial_hidden),
                         precision=precision,
+                        learned_density=density,
                     )
                 )
             products.append(
@@ -277,7 +401,15 @@ class MACEBackbone(nn.Module):
         edge_attributes = self.edge_attributes(
             vectors if self.edge_axes is None else vectors[:, self.edge_axes]
         )
-        radial = self.radial(lengths)
+        if self.distance_transform is None:
+            radial = self.radial(lengths)
+        else:
+            radial = self.radial(
+                lengths,
+                self.distance_transform(lengths, graph["atomic_numbers"], edge_index),
+            )
+
+        edge_envelope = None if self.envelope is None else self.envelope(lengths)
 
         element = self.element_index(graph["atomic_numbers"])
         one_hot = torch.zeros(
@@ -309,6 +441,7 @@ class MACEBackbone(nn.Module):
                 sender,
                 receiver,
                 num_nodes,
+                edge_envelope,
             )
             features = product(message, product_element, carried)
             if self.locality is not None:

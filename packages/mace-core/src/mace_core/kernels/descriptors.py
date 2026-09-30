@@ -304,4 +304,8 @@ class RadialBasisDescriptor(Descriptor):
     #: moves the energy by 6.3e-3 eV.
     cutoff_order: int = 6
     cutoff: float = 5.0
+    #: Multiply the envelope into the basis. Off, the op returns the bare
+    #: basis and the model applies the envelope after its radial networks,
+    #: which is a different function the frozen tree also trains.
+    apply_cutoff: bool = True
     extra: tuple[tuple[str, float], ...] = field(default_factory=tuple)
