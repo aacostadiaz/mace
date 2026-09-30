@@ -41,6 +41,7 @@ from torch import Tensor, nn
 
 from mace_torch.nn.graph_features import FeatureSpec, GraphFeatureEmbedding
 from mace_torch.nn.interaction import (
+    DEFAULT_RADIAL_HIDDEN,
     InteractionBlock,
     NonLinearInteractionBlock,
     ResidualInteractionBlock,
@@ -109,6 +110,8 @@ class MACEBackbone(nn.Module):
         graph_features: Per-structure or per-atom inputs, such as the total
             charge and spin, embedded and added to the element embedding's
             scalars before the first layer.
+        radial_hidden: The hidden widths of every interaction's radial
+            network.
         precision: The dtype name every op is built at.
         node_inputs: Declared per-node input streams to mix into the features
             before the first layer. Nothing about them is special-cased: each
@@ -167,6 +170,7 @@ class MACEBackbone(nn.Module):
         distance_transform: Literal["none", "agnesi", "soft"] = "none",
         apply_cutoff: bool = True,
         graph_features: Sequence[FeatureSpec] = (),
+        radial_hidden: Sequence[int] = DEFAULT_RADIAL_HIDDEN,
         precision: Precision = "float64",
         locality: Callable[[Tensor, Mapping[str, Any]], Tensor] | None = None,
         node_inputs: Sequence[InputSpec] = (),
@@ -281,6 +285,7 @@ class MACEBackbone(nn.Module):
                         num_features=num_features,
                         num_up_features=num_up_features,
                         num_elements=len(self.atomic_numbers),
+                        radial_hidden=tuple(radial_hidden),
                         precision=precision,
                     )
                 )
@@ -295,6 +300,7 @@ class MACEBackbone(nn.Module):
                         num_features=num_features,
                         num_elements=len(self.atomic_numbers),
                         avg_num_neighbors=avg_num_neighbors,
+                        radial_hidden=tuple(radial_hidden),
                         precision=precision,
                         learned_density=density,
                     )
@@ -311,6 +317,7 @@ class MACEBackbone(nn.Module):
                         num_features=num_features,
                         num_elements=len(self.atomic_numbers),
                         avg_num_neighbors=avg_num_neighbors,
+                        radial_hidden=tuple(radial_hidden),
                         precision=precision,
                         learned_density=density,
                     )

@@ -95,6 +95,7 @@ class MACEModel(nn.Module):
         readout_biased: The frozen tree's biased readout on the last layer.
         readout_from_embedding: Also read an energy out of the node embedding,
             before the first interaction.
+        radial_hidden: The radial networks' hidden widths.
         full_last_layer: Keep every irrep in the last layer; see the backbone.
         element_agnostic_product: One set of product weights for all
             elements; see the backbone.
@@ -127,6 +128,7 @@ class MACEModel(nn.Module):
         readout_last_only: bool = False,
         readout_biased: bool = False,
         readout_from_embedding: bool = False,
+        radial_hidden: Sequence[int] = (64, 64, 64),
         node_inputs: Sequence[InputSpec] = (),
         readout_hidden: int = 16,
         num_heads: int = 1,
@@ -159,6 +161,7 @@ class MACEModel(nn.Module):
                 distance_transform=distance_transform,
                 apply_cutoff=apply_cutoff,
                 graph_features=graph_features,
+                radial_hidden=radial_hidden,
                 precision=precision,
                 node_inputs=node_inputs,
                 residual_first_layer=residual_first_layer,
