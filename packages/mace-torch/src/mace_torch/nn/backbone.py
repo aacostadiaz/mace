@@ -39,6 +39,7 @@ from mace_core.kernels.precision import Precision
 from mace_core.observables import InputSpec
 from torch import Tensor, nn
 
+from mace_torch.nn.graph_features import FeatureSpec, GraphFeatureEmbedding
 from mace_torch.nn.interaction import (
     InteractionBlock,
     NonLinearInteractionBlock,
@@ -105,6 +106,9 @@ class MACEBackbone(nn.Module):
         apply_cutoff: Multiply the cutoff envelope into the radial basis, the
             default. Off, every interaction multiplies it into the output of
             its radial networks instead.
+        graph_features: Per-structure or per-atom inputs, such as the total
+            charge and spin, embedded and added to the element embedding's
+            scalars before the first layer.
         precision: The dtype name every op is built at.
         node_inputs: Declared per-node input streams to mix into the features
             before the first layer. Nothing about them is special-cased: each
@@ -162,6 +166,7 @@ class MACEBackbone(nn.Module):
         cutoff_order: int = 6,
         distance_transform: Literal["none", "agnesi", "soft"] = "none",
         apply_cutoff: bool = True,
+        graph_features: Sequence[FeatureSpec] = (),
         precision: Precision = "float64",
         locality: Callable[[Tensor, Mapping[str, Any]], Tensor] | None = None,
         node_inputs: Sequence[InputSpec] = (),
@@ -323,6 +328,16 @@ class MACEBackbone(nn.Module):
                     precision=precision,
                 )
             )
+        self.graph_features = (
+            GraphFeatureEmbedding(
+                list(graph_features),
+                num_features=num_features,
+                num_scalars=1,
+                precision=precision,
+            )
+            if graph_features
+            else None
+        )
         self.node_inputs = (
             NodeInputEmbedding(
                 backend,
@@ -399,13 +414,7 @@ class MACEBackbone(nn.Module):
         edge_envelope = None if self.envelope is None else self.envelope(lengths)
 
         element = self.element_index(graph["atomic_numbers"])
-        one_hot = torch.zeros(
-            num_nodes,
-            len(self.atomic_numbers),
-            dtype=positions.dtype,
-            device=positions.device,
-        )
-        one_hot[torch.arange(num_nodes, device=positions.device), element] = 1.0
+        one_hot = self._one_hot(element, positions)
 
         # One set of product weights for every element is the same contraction
         # with every node reading the first.
@@ -413,10 +422,7 @@ class MACEBackbone(nn.Module):
             torch.zeros_like(element) if self.element_agnostic_product else element
         )
 
-        # Scalars only, so the grouped layout is already what comes out.
-        features = self.node_embedding(one_hot)
-        if self.node_inputs is not None:
-            features = self.node_inputs(graph, features)
+        features = self._embed(graph, one_hot)
 
         outputs = []
         for interaction, product in zip(self.interactions, self.products, strict=True):
@@ -435,6 +441,34 @@ class MACEBackbone(nn.Module):
                 features = self.locality(features, graph)
             outputs.append(features)
         return outputs
+
+    def embedding(self, graph: Mapping[str, Any]) -> Tensor:
+        """The node features before the first interaction, flat and grouped
+        by irrep: the element embedding, with the declared graph features and
+        node inputs added."""
+        positions = graph["positions"]
+        element = self.element_index(graph["atomic_numbers"])
+        return self._embed(graph, self._one_hot(element, positions))
+
+    def _one_hot(self, element: Tensor, positions: Tensor) -> Tensor:
+        num_nodes = int(positions.shape[0])
+        one_hot = torch.zeros(
+            num_nodes,
+            len(self.atomic_numbers),
+            dtype=positions.dtype,
+            device=positions.device,
+        )
+        one_hot[torch.arange(num_nodes, device=positions.device), element] = 1.0
+        return one_hot
+
+    def _embed(self, graph: Mapping[str, Any], one_hot: Tensor) -> Tensor:
+        # Scalars only, so the grouped layout is already what comes out.
+        features = self.node_embedding(one_hot)
+        if self.graph_features is not None:
+            features = self.graph_features(graph, features)
+        if self.node_inputs is not None:
+            features = self.node_inputs(graph, features)
+        return features
 
     def descriptors(
         self,
