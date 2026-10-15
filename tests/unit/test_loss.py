@@ -11,10 +11,11 @@ minimal stand-in object providing both access styles is enough.
 """
 
 import argparse
+import subprocess
+import sys
 
 import pytest
 import torch
-import torch.distributed as dist
 
 from mace.modules.loss import (
     DipolePolarLoss,
@@ -678,6 +679,30 @@ def test_is_ddp_enabled_is_false_without_a_process_group():
     assert is_ddp_enabled() is False
 
 
+_WORLD_OF_ONE = """
+import os
+import sys
+
+import torch
+import torch.distributed as dist
+
+from mace.modules.loss import is_ddp_enabled, reduce_loss
+
+dist.init_process_group(
+    backend="gloo", init_method="file://" + sys.argv[1], rank=0, world_size=1
+)
+raw = torch.tensor([1.0, 2.0, 6.0])
+print(
+    dist.get_world_size(),
+    is_ddp_enabled(),
+    reduce_loss(raw, ddp=True).item(),
+    reduce_loss(raw, ddp=None).item(),
+    flush=True,
+)
+os._exit(0)
+"""
+
+
 def test_reduce_loss_ddp_formula_in_a_world_of_one(tmp_path):
     """The one path a single-process test can still reach exactly.
 
@@ -688,22 +713,29 @@ def test_reduce_loss_ddp_formula_in_a_world_of_one(tmp_path):
     it checkable here -- and the formula, not the mean, is what a port has to
     reproduce, because the two disagree the moment ranks hold different
     numbers of atoms.
+
+    The process group lives in a child process that exits without tearing it
+    down. Tearing a gloo group down can block inside its C++ destructor, where
+    no Python-level timeout reaches, and that would stall the whole worker.
     """
-    store = tmp_path / "gloo_store"
-    dist.init_process_group(
-        backend="gloo", init_method=f"file://{store}", rank=0, world_size=1
+    result = subprocess.run(
+        [sys.executable, "-c", _WORLD_OF_ONE, str(tmp_path / "gloo_store")],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
     )
-    try:
-        raw = torch.tensor([1.0, 2.0, 6.0])
-        assert dist.get_world_size() == 1
-        # world_size 1 means is_ddp_enabled() stays False even here: the
-        # helper asks for > 1, so a one-rank run takes the plain-mean path
-        # unless a caller passes ddp=True explicitly.
-        assert is_ddp_enabled() is False
-        assert reduce_loss(raw, ddp=True).item() == pytest.approx(3.0)
-        assert reduce_loss(raw, ddp=None).item() == pytest.approx(3.0)
-    finally:
-        dist.destroy_process_group()
+    assert result.returncode == 0, result.stderr
+
+    # Importing mace can print to stdout, so the answer is the last line.
+    world_size, ddp_enabled, with_ddp, by_default = result.stdout.splitlines()[-1].split()
+    assert world_size == "1"
+    # world_size 1 means is_ddp_enabled() stays False even here: the
+    # helper asks for > 1, so a one-rank run takes the plain-mean path
+    # unless a caller passes ddp=True explicitly.
+    assert ddp_enabled == "False"
+    assert float(with_ddp) == pytest.approx(3.0)
+    assert float(by_default) == pytest.approx(3.0)
 
 
 # ---------------------------------------------------------------------------
